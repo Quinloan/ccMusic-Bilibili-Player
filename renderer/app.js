@@ -219,6 +219,29 @@ function openAccountMenu() {
   m.hidden = false;
 }
 
+// ---------------------------------------------------------------- 删除确认
+// 删除是不可撤销的，统一走确认弹窗，避免手滑点掉歌单或整组多 P
+let confirmResolve = null;
+function askConfirm(title, desc, okText = '删除') {
+  const m = $('#confirmModal');
+  $('#cfTitle').textContent = title;
+  $('#cfDesc').textContent = desc || '';
+  $('#cfOk').textContent = okText;
+  m.hidden = false;
+  return new Promise((res) => { confirmResolve = res; });
+}
+function closeConfirm(v) {
+  $('#confirmModal').hidden = true;
+  const r = confirmResolve;
+  confirmResolve = null;
+  if (r) r(v);
+}
+$('#cfOk').onclick = () => closeConfirm(true);
+$('#cfCancel').onclick = () => closeConfirm(false);
+$('#confirmModal').onclick = (e) => {
+  if (e.target.id === 'confirmModal') closeConfirm(false);
+};
+
 // ---------------------------------------------------------------- 渲染
 function renderFolders() {
   $('#folders').innerHTML = S.folders
@@ -231,12 +254,23 @@ function renderFolders() {
     )
     .join('');
   $$('#folders .folder').forEach((el) => {
-    el.onclick = (e) => {
+    el.onclick = async (e) => {
       const del = e.target.dataset.del;
       if (del) {
-        S.folders = S.folders.filter((f) => f.id !== del);
+        const f = S.folders.find((x) => x.id === del);
+        if (!f) return;
+        const n = f.items.length;
+        const ok = await askConfirm(
+          '删除收藏夹',
+          `「${f.name}」${n ? `及其中的 ${n} 首歌` : ''}将被删除，删除后无法恢复。`,
+          '删除收藏夹'
+        );
+        if (!ok) return;
+        S.folders = S.folders.filter((x) => x.id !== del);
         if (S.active === del) S.active = S.folders[0].id;
-        save(); renderFolders(); renderList(); showView('library'); return;
+        save(); renderFolders(); renderList(); showView('library');
+        toast(`已删除收藏夹「${f.name}」`);
+        return;
       }
       S.active = el.dataset.id;
       save(); renderFolders(); renderList(); showView('library');
@@ -336,11 +370,16 @@ function renderList() {
     const gp = el.dataset.gplay;
     const grm = el.dataset.grm;
     const isGroup = el.dataset.bvid !== undefined;
-    el.onclick = (e) => {
+    el.onclick = async (e) => {
       if (e.target.dataset.rm !== undefined) {
+        const it = f.items[+e.target.dataset.rm];
+        const ok = await askConfirm('从收藏夹移除', `「${it.title}」将从「${f.name}」移除。`, '移除');
+        if (!ok) return;
         f.items.splice(+e.target.dataset.rm, 1);
         if (S.cur >= f.items.length) S.cur = -1;
-        save(); renderFolders(); renderList(); return;
+        save(); renderFolders(); renderList();
+        toast('已移除');
+        return;
       }
       if (e.target.dataset.play !== undefined) {
         e.stopPropagation();
@@ -354,7 +393,16 @@ function renderList() {
       }
       if (grm !== undefined) {
         e.stopPropagation();
-        rmItems(+grm, +el.dataset.count);
+        const cnt = +el.dataset.count;
+        const vtitle = f.items[+grm].vtitle || f.items[+grm].title;
+        const ok = await askConfirm(
+          '移除全部分 P',
+          `「${vtitle}」的 ${cnt} 首歌将一起从「${f.name}」移除。`,
+          `移除 ${cnt} 首`
+        );
+        if (!ok) return;
+        rmItems(+grm, cnt);
+        toast(`已移除 ${cnt} 首`);
         return;
       }
       if (isGroup) { toggleCollapsed(el.dataset.bvid); return; }
@@ -371,7 +419,17 @@ function renderList() {
           { label: '播放', action: () => playIndex(start) },
           { label: '在浏览器打开 B 站页面', action: () => B.openExternal('https://www.bilibili.com/video/' + bid) },
           { label: '复制视频链接', action: () => { B.copyText('https://www.bilibili.com/video/' + bid); toast('链接已复制'); } },
-          { label: '移除全部', action: () => rmItems(start, cnt) },
+          { label: '移除全部', action: async () => {
+              const vtitle = f.items[start].vtitle || f.items[start].title;
+              const ok = await askConfirm(
+                '移除全部分 P',
+                `「${vtitle}」的 ${cnt} 首歌将一起从「${f.name}」移除。`,
+                `移除 ${cnt} 首`
+              );
+              if (!ok) return;
+              rmItems(start, cnt);
+              toast(`已移除 ${cnt} 首`);
+            } },
         ]);
         return;
       }
@@ -382,7 +440,14 @@ function renderList() {
         { label: '该视频的全部分 P…', action: () => openPartsOfVideo(it.bvid) },
         { label: '在浏览器打开 B 站页面', action: () => B.openExternal('https://www.bilibili.com/video/' + it.bvid) },
         { label: '复制视频链接', action: () => { B.copyText('https://www.bilibili.com/video/' + it.bvid); toast('链接已复制'); } },
-        { label: '从歌单移除', action: () => { f.items.splice(i, 1); if (S.cur >= f.items.length) S.cur = -1; save(); renderFolders(); renderList(); } },
+        { label: '从歌单移除', action: async () => {
+            const ok = await askConfirm('从收藏夹移除', `「${it.title}」将从「${f.name}」移除。`, '移除');
+            if (!ok) return;
+            f.items.splice(i, 1);
+            if (S.cur >= f.items.length) S.cur = -1;
+            save(); renderFolders(); renderList();
+            toast('已移除');
+          } },
       ]);
     };
   });
@@ -1383,6 +1448,7 @@ $('#quality').onclick = () => {
 
 document.onkeydown = (e) => {
   if (e.key === 'Escape') {
+    if (!$('#confirmModal').hidden) return closeConfirm(false);
     if (!$('#settingsModal').hidden) return closeSettings();
     if (!$('#partsModal').hidden) return closePartsPicker();
     if (!$('#loginModal').hidden) return $('#loginClose').click();

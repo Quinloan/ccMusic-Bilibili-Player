@@ -375,6 +375,20 @@ button.primary:hover { opacity: .9; color: #fff; }
   padding: 0 3px; border-radius: 8px; background: var(--accent); color: #fff;
   font-size: 10px; line-height: 15px; text-align: center;
 }
+/* 删除前的确认弹窗 */
+.confirm-box { width: 380px; max-width: 90vw; padding: 20px 20px 16px; text-align: left; }
+.cf-title { font-size: 14px; font-weight: 600; margin-bottom: 8px; }
+.cf-desc {
+  font-size: 12.5px; color: var(--muted); line-height: 1.7;
+  word-break: break-word; margin-bottom: 18px;
+}
+.cf-btns { display: flex; justify-content: flex-end; gap: 10px; }
+.cf-btns button { padding: 6px 16px; font-size: 12.5px; }
+.cf-btns .danger {
+  background: var(--accent); border-color: var(--accent); color: #fff;
+}
+.cf-btns .danger:hover { opacity: .88; }
+
 /* 设置：居中悬浮卡片 */
 .settings-box {
   width: 560px; max-width: 92vw; padding: 0; text-align: left;

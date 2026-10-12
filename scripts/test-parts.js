@@ -174,6 +174,28 @@ async function getWin() {
   })()`);
   log('[11] 音量曲线(线性时 pos10=0.1/pos20=0.2，平方后更平缓):', JSON.stringify(vol));
 
+  // 12. 删除确认：点移除 → 弹窗 → 确认 → 歌曲真的少一首；取消路径也验证
+  const del = await run(`(async () => {
+    localStorage.collapsedVideos = '[]';
+    renderList();
+    await new Promise((r) => setTimeout(r, 150));
+    const before = folder().items.length;
+    document.querySelector('#list .row [data-rm]').click();
+    await new Promise((r) => setTimeout(r, 250));
+    const shown = !document.querySelector('#confirmModal').hidden;
+    const title = document.querySelector('#cfTitle').textContent;
+    document.querySelector('#cfCancel').click();
+    await new Promise((r) => setTimeout(r, 150));
+    const afterCancel = folder().items.length;
+    document.querySelector('#list .row [data-rm]').click();
+    await new Promise((r) => setTimeout(r, 250));
+    document.querySelector('#cfOk').click();
+    await new Promise((r) => setTimeout(r, 250));
+    const after = folder().items.length;
+    return { before, shown, title, afterCancel, after };
+  })()`);
+  log('[12] 删除确认(取消后数量不变, 确认后-1):', JSON.stringify(del));
+
   fs.mkdirSync(path.dirname(OUT), { recursive: true });
   const img = await win.webContents.capturePage();
   fs.writeFileSync(OUT, img.toPNG());

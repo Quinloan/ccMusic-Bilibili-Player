@@ -14,6 +14,7 @@ const search = process.argv.includes('--search');
 const openQueue = process.argv.includes('--queue');
 const openSettings = process.argv.includes('--settings');
 const collapseGroups = process.argv.includes('--collapse');
+const shotConfirm = process.argv.includes('--confirm');
 
 // 演示数据注入脚本（在渲染进程执行）
 const DEMO_JS = `
@@ -167,6 +168,12 @@ app.whenReady().then(async () => {
       "document.querySelector('#queuePanel').hidden = false; renderQueue(); 'ok'"
     );
     await new Promise((r) => setTimeout(r, 300));
+  }
+  if (shotConfirm) {
+    await win.webContents.executeJavaScript(
+      "typeof askConfirm === 'function' ? (askConfirm('移除全部分 P', '「测试合集」的 6 首歌将一起从「我的收藏夹」移除。', '移除 6 首'), 'ok') : 'no-fn'"
+    );
+    await new Promise((r) => setTimeout(r, 400));
   }
   if (openSettings) {
     await win.webContents.executeJavaScript(
