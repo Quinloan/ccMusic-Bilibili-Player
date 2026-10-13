@@ -63,7 +63,8 @@ label = {"01-library.png": "主界面（收藏夹 + 正在播放）",
          "03-settings.png": "设置（居中悬浮卡片）",
          "04-queue.png": "播放列表（悬浮卡片，与收藏夹分离）",
          "05-group.png": "歌单多 P 分组（收起态，点击展开）",
-         "06-menu.png": "账号菜单"}.get
+         "06-menu.png": "账号菜单",
+         "07-confirm.png": "删除前的确认弹窗"}.get
 lines = ["## 界面预览", ""]
 for name, u in urls:
     lines.append("![%s](%s)" % (label(name) or name, u))

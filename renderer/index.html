@@ -14,6 +14,11 @@
       <img class="side-brand-logo" src="../assets/icon.png" alt="" />
       <span>ccMusic</span>
     </div>
+    <div class="side-label">发现</div>
+    <div class="nav-item home-nav" data-view="home">
+      <svg viewBox="0 0 20 20" width="16" height="16" fill="currentColor"><path d="M10 2.6 2.5 8.4V17a.8.8 0 0 0 .8.8H8v-5.2h4V17.8h4.7a.8.8 0 0 0 .8-.8V8.4L10 2.6Z"/></svg>
+      <span>首页</span>
+    </div>
     <div class="side-label">我的收藏夹</div>
     <div id="folders" class="folders"></div>
     <div class="newfolder">
@@ -52,6 +57,30 @@
     </header>
 
     <main class="main">
+      <section id="view-home" class="view" hidden>
+        <div class="page home">
+          <div class="home-hero" id="homeHero"></div>
+
+          <div class="home-sec">
+            <div class="sec-title">最近播放</div>
+            <div id="homeRecent" class="home-grid"></div>
+          </div>
+
+          <div class="home-sec">
+            <div class="sec-title">我的收藏夹</div>
+            <div id="homeFolders" class="home-grid"></div>
+          </div>
+
+          <div class="home-sec">
+            <div class="sec-title">音乐区热门</div>
+            <div class="sec-desc">来自 B 站音乐区排行榜，点击卡片可加入收藏夹或播放列表</div>
+            <div id="homeHot" class="home-grid">
+              <div class="muted">正在加载…</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <section id="view-library" class="view">
         <div class="view-head">
           <h2 id="libTitle">我的收藏夹</h2>

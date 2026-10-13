@@ -15,6 +15,7 @@ const openQueue = process.argv.includes('--queue');
 const openSettings = process.argv.includes('--settings');
 const collapseGroups = process.argv.includes('--collapse');
 const shotConfirm = process.argv.includes('--confirm');
+const shotHome = process.argv.includes('--home');
 
 // 演示数据注入脚本（在渲染进程执行）
 const DEMO_JS = `
@@ -73,6 +74,22 @@ const DEMO_JS = `
   S.queue = f1.items.slice(0, 12).map(function (x) { return Object.assign({}, x); });
   S.qcur = 2;
   renderQueue();
+  S.history = [
+    { bvid: 'BV1FPjy6TEiE', cid: 39252201332, page: 3, title: '周杰伦-星晴',
+      up: '超级爱下雨天', cover: mk(C[2]), duration: 259, vtitle: '【周杰伦】50首精选合集' },
+    { bvid: 'BV1g411c7F0', cid: 1006, page: 1, title: '在百万家装录音棚大声听 徐良&小凌《坏女孩》',
+      up: 'JLRS-LeoFM', cover: mk(C[6]), duration: 244 },
+    { bvid: 'BV1h411c7F1', cid: 1007, page: 1, title: '起风了',
+      up: '买辣椒也用券', cover: mk(C[0]), duration: 325 },
+    { bvid: 'BV2a411c7EU', cid: 1001, page: 1, title: 'River Flows in You',
+      up: 'Yiruma', cover: mk(C[3]), duration: 190 },
+  ];
+  S.hot = [
+    { bvid: 'BV9x411c7mG', cid: 1, title: '【Hi-Res】无损音质试音天碟', author: '音乐区UP', pic: mk(C[1]), duration: 320, play: 128000 },
+    { bvid: 'BV9y411c7mH', cid: 2, title: '循环歌单｜深夜适合听的华语慢歌', author: '深夜电台', pic: mk(C[4]), duration: 3619, play: 452000 },
+    { bvid: 'BV9z411c7mI', cid: 3, title: '一个人的房间，开一盏灯', author: '安静角落', pic: mk(C[5]), duration: 268, play: 33000 },
+    { bvid: 'BV9v411c7mJ', cid: 4, title: '钢琴改编｜起风了', author: '钢琴菌', pic: mk(C[7]), duration: 245, play: 98000 },
+  ];
   localStorage.collapsedVideos = ${collapseGroups ? "JSON.stringify(['BV1FPjy6TEiE'])" : "'[]'"};
   renderList();
 
@@ -168,6 +185,12 @@ app.whenReady().then(async () => {
       "document.querySelector('#queuePanel').hidden = false; renderQueue(); 'ok'"
     );
     await new Promise((r) => setTimeout(r, 300));
+  }
+  if (shotHome) {
+    await win.webContents.executeJavaScript(
+      "typeof renderHome === 'function' ? (showView('home'), renderHome(), document.querySelector('.page.home').scrollTop = 620, 'ok') : 'no-fn'"
+    );
+    await new Promise((r) => setTimeout(r, 400));
   }
   if (shotConfirm) {
     await win.webContents.executeJavaScript(

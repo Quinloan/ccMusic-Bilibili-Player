@@ -221,6 +221,28 @@ ipcMain.handle('bili:search', async (_e, keyword, page = 1) => {
   return { list, hasMore: ((j.data && j.data.numPages) || 1) > page };
 });
 
+// 音乐区排行榜（rid=3 = 音乐区），首页的「热门推荐」用
+ipcMain.handle('bili:hot', async () => {
+  await ensureSession();
+  await ensureWbi();
+  const params = signWbi({ rid: 3, type: 'all' });
+  const j = await apiGet(API, '/x/web-interface/ranking/v2', params);
+  if (!j || j.code !== 0) throw new Error((j && j.message) || '热门列表获取失败');
+  const strip = (s) => String(s == null ? '' : s).replace(/<[^>]+>/g, '');
+  const list = ((j.data && j.data.list) || []).slice(0, 24).map((it) => ({
+    bvid: it.bvid,
+    aid: it.aid,
+    cid: it.cid,
+    title: strip(it.title),
+    author: strip(it.owner && it.owner.name),
+    pic: it.pic && it.pic.indexOf('//') === 0 ? 'https:' + it.pic : it.pic,
+    duration: it.duration,
+    play: it.stat && it.stat.view,
+    danmaku: it.stat && it.stat.danmaku,
+  }));
+  return { list };
+});
+
 ipcMain.handle('bili:video', async (_e, id) => {
   await ensureSession();
   // 同时支持 BV 号、av 号

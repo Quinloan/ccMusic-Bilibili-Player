@@ -375,6 +375,65 @@ button.primary:hover { opacity: .9; color: #fff; }
   padding: 0 3px; border-radius: 8px; background: var(--accent); color: #fff;
   font-size: 10px; line-height: 15px; text-align: center;
 }
+/* 侧栏首页入口 */
+.home-nav {
+  display: flex; align-items: center; gap: 8px; margin: 0 8px 4px;
+  padding: 7px 12px; border-radius: 8px; cursor: pointer; font-size: 13px;
+}
+.home-nav:hover { background: var(--bg); }
+.home-nav.on { background: var(--accent-soft); color: var(--accent); }
+.home-nav svg { flex: 0 0 16px; color: var(--muted); }
+.home-nav.on svg { color: var(--accent); }
+
+/* 首页 */
+.page.home { max-width: 1000px; }
+.home-hero {
+  display: flex; align-items: center; gap: 16px; padding: 16px 18px; margin-bottom: 26px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+}
+.home-hero img {
+  width: 62px; height: 62px; border-radius: 8px; object-fit: cover; background: var(--line);
+}
+.home-hero .hh-t { font-size: 14px; font-weight: 500; }
+.home-hero .hh-u { font-size: 12px; color: var(--muted); margin-top: 4px; }
+.home-hero .hh-r { margin-left: auto; display: flex; gap: 8px; }
+.home-sec { margin-bottom: 28px; }
+.home-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(158px, 1fr)); gap: 14px;
+}
+.hcard {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  padding: 10px; cursor: pointer; position: relative;
+}
+.hcard:hover { border-color: var(--accent); }
+.hcard .hc-cover {
+  width: 100%; aspect-ratio: 16 / 10; object-fit: cover; border-radius: 8px;
+  background: var(--line); display: block;
+}
+.hcard .hc-t {
+  font-size: 12.5px; margin-top: 8px; line-height: 1.4;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.hcard .hc-u { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+.hcard .hc-acts {
+  position: absolute; right: 8px; top: 8px; display: flex; gap: 6px; opacity: 0;
+}
+.hcard:hover .hc-acts { opacity: 1; }
+.hcard .hc-acts button {
+  width: 26px; height: 26px; padding: 0; border-radius: 50%; font-size: 13px;
+  background: rgba(255, 255, 255, .94); border: 1px solid var(--line);
+}
+.hcard .hc-acts button:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+.hcard .hc-badge {
+  position: absolute; right: 8px; bottom: 8px; padding: 0 5px; border-radius: 4px;
+  background: rgba(0, 0, 0, .68); color: #fff; font-size: 10.5px; line-height: 16px;
+}
+.hcard .hc-folder {
+  font-size: 22px; color: var(--muted); text-align: center; line-height: 62px;
+  background: var(--bg); border-radius: 8px;
+}
+
 /* 删除前的确认弹窗 */
 .confirm-box { width: 380px; max-width: 90vw; padding: 20px 20px 16px; text-align: left; }
 .cf-title { font-size: 14px; font-weight: 600; margin-bottom: 8px; }
