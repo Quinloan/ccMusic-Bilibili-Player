@@ -33,7 +33,7 @@ const GROUPS = [['音乐']];
   const dur = (d) => (typeof d === 'string' && d.includes(':')
     ? d.split(':').reduce((a, b) => a * 60 + (+b || 0), 0)
     : Number(d) || 0);
-  const bad = /教程|教学|课程|入门|进阶|零基础|怎么|如何|测评|开箱|挑战|vs|reaction|综艺|解说|访谈|预告|直播回放/i;
+  const bad = /教程|教学|课程|零基础|入门|进阶/i;
 
   for (const g of GROUPS) {
     console.log('\n=== 关键词组：' + g.join(' / ') + ' ===');
@@ -43,7 +43,7 @@ const GROUPS = [['音乐']];
         `(async () => await window.api.search(${JSON.stringify(kw)}, 1))()`
       );
       const list = r.list || [];
-      const ok = list.filter((x) => { const d = dur(x.duration); return d >= 60 && d <= 10800 && !bad.test(x.title || ''); });
+      const ok = list.filter((x) => { const d = dur(x.duration); return d >= 60 && !bad.test(x.title || ''); });
       total += list.length; kept += ok.length;
       console.log(`  「${kw}」 共 ${list.length} 条，过滤后 ${ok.length} 条，原始前 8 条：`);
       list.slice(0, 8).forEach((x) => {
