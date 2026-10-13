@@ -31,6 +31,7 @@ async function getWin() {
   await wait(2500); // 等渲染端 init + session 就绪
   const run = (js) => win.webContents.executeJavaScript(js);
   const log = (...a) => console.log(...a);
+  const withAudio = process.argv.includes('--audio'); // 默认不播放；只有显式 --audio 才播
 
   // 1. 直接调主进程接口看返回值（不经 UI）
   const meta = await run(`(async () => {
@@ -69,6 +70,7 @@ async function getWin() {
   log('[3] 加入歌单:', JSON.stringify(lib));
 
   // 4. 播放第 3 P（验证 cid 取流链路）
+  if (withAudio) {
   await run(`playIndex(2)`);
   await wait(3500);
   const play = await run(`({
@@ -79,6 +81,7 @@ async function getWin() {
     err: audio.error && audio.error.message,
   })`);
   log('[4] 播放 P3:', JSON.stringify(play));
+  } else { log('[4] 播放: 已跳过（默认不播放）'); }
 
   // 5. 重复加入去重
   await run(`pickParts({ bvid: ${JSON.stringify(BVID)} })`);
@@ -149,6 +152,7 @@ async function getWin() {
   log('[9] 收起后(应只剩组头, 箭头▸):', JSON.stringify(col));
 
   // 10. 音量平衡：音频图是否建立、有无信号、补偿增益是否算出来
+  if (withAudio) {
   const vb = await run(`(async () => {
     applyBalanceRouting();
     startAgc();
@@ -163,6 +167,7 @@ async function getWin() {
     };
   })()`);
   log('[10] 音量平衡(gain≈0.6~2, peakNow>0 表示有信号):', JSON.stringify(vb));
+  } else { log('[10] 音量平衡: 已跳过（默认不播放）'); }
 
   // 11. 音量曲线：小声区可微调，不再一拉就没声
   const vol = await run(`(() => {
