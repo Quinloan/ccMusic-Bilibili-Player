@@ -385,18 +385,7 @@ button.primary:hover { opacity: .9; color: #fff; }
 .home-nav svg { flex: 0 0 16px; color: var(--muted); }
 .home-nav.on svg { color: var(--accent); }
 
-/* 首页 */
-.page.home { max-width: 1000px; }
-.home-hero {
-  display: flex; align-items: center; gap: 16px; padding: 16px 18px; margin-bottom: 26px;
-  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
-}
-.home-hero img {
-  width: 62px; height: 62px; border-radius: 8px; object-fit: cover; background: var(--line);
-}
-.home-hero .hh-t { font-size: 14px; font-weight: 500; }
-.home-hero .hh-u { font-size: 12px; color: var(--muted); margin-top: 4px; }
-.home-hero .hh-r { margin-left: auto; display: flex; gap: 8px; }
+/* 首页（只有音乐区热门） */
 .home-sec { margin-bottom: 28px; }
 .home-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(158px, 1fr)); gap: 14px;

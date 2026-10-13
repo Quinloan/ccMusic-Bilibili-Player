@@ -74,16 +74,6 @@ const DEMO_JS = `
   S.queue = f1.items.slice(0, 12).map(function (x) { return Object.assign({}, x); });
   S.qcur = 2;
   renderQueue();
-  S.history = [
-    { bvid: 'BV1FPjy6TEiE', cid: 39252201332, page: 3, title: '周杰伦-星晴',
-      up: '超级爱下雨天', cover: mk(C[2]), duration: 259, vtitle: '【周杰伦】50首精选合集' },
-    { bvid: 'BV1g411c7F0', cid: 1006, page: 1, title: '在百万家装录音棚大声听 徐良&小凌《坏女孩》',
-      up: 'JLRS-LeoFM', cover: mk(C[6]), duration: 244 },
-    { bvid: 'BV1h411c7F1', cid: 1007, page: 1, title: '起风了',
-      up: '买辣椒也用券', cover: mk(C[0]), duration: 325 },
-    { bvid: 'BV2a411c7EU', cid: 1001, page: 1, title: 'River Flows in You',
-      up: 'Yiruma', cover: mk(C[3]), duration: 190 },
-  ];
   S.hot = [
     { bvid: 'BV9x411c7mG', cid: 1, title: '【Hi-Res】无损音质试音天碟', author: '音乐区UP', pic: mk(C[1]), duration: 320, play: 128000 },
     { bvid: 'BV9y411c7mH', cid: 2, title: '循环歌单｜深夜适合听的华语慢歌', author: '深夜电台', pic: mk(C[4]), duration: 3619, play: 452000 },

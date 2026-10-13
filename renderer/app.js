@@ -19,7 +19,6 @@ const S = {
   kw: '',
   page: 1,
   hasMore: false,
-  history: [], // 最近播放（最多 24 条）
   hot: [],     // 首页：B 站音乐区热门
 };
 
@@ -37,7 +36,6 @@ const folder = () => S.folders.find((f) => f.id === S.active);
 const save = () =>
   B.setLibrary({
     folders: S.folders, active: S.active, queue: S.queue, qcur: S.qcur,
-    history: S.history,
   });
 
 let toastTimer;
@@ -121,7 +119,6 @@ async function init() {
   // 播放列表：上次退出时的队列，恢复但不自动播放
   S.queue = Array.isArray(lib?.queue) ? lib.queue.filter((x) => x && x.bvid) : [];
   S.qcur = Number.isInteger(lib?.qcur) && lib.qcur < S.queue.length ? lib.qcur : -1;
-  S.history = Array.isArray(lib?.history) ? lib.history.filter((x) => x && x.bvid).slice(0, 24) : [];
   audio.volume = 0.8; // 仍是 80%，滑块位置按曲线反推（约 89）
   $('#vol').value = posFromVol(0.8);
   renderFolders();
@@ -229,49 +226,6 @@ function openAccountMenu() {
 }
 
 // ---------------------------------------------------------------- 首页
-// 最近播放：记录最近播过的曲目（含分 P），首页与「继续播放」都用它
-function pushHistory(it) {
-  if (!it || !it.bvid) return;
-  const key = itemKey(it);
-  S.history = S.history.filter((x) => itemKey(x) !== key);
-  S.history.unshift({
-    bvid: it.bvid, cid: it.cid, page: it.page || 1, title: it.title,
-    up: it.up || it.author || '', cover: it.cover || '', duration: it.duration || 0,
-    vtitle: it.vtitle || '',
-  });
-  S.history = S.history.slice(0, 24);
-  save();
-}
-
-function renderHomeHero() {
-  const last = S.history[0];
-  const box = $('#homeHero');
-  if (!last) {
-    box.innerHTML = `<div>
-      <div class="hh-t">还没有播放记录</div>
-      <div class="hh-u">在上方搜索框找首歌，或点下面的热门推荐试试</div>
-    </div>`;
-    return;
-  }
-  box.innerHTML = `<img src="${esc(last.cover || '')}" />
-    <div>
-      <div class="hh-t">继续播放：${esc(last.title)}</div>
-      <div class="hh-u">${esc(last.up || '')}</div>
-    </div>
-    <div class="hh-r">
-      <button id="heroPlay">继续播放</button>
-    </div>`;
-  $('#heroPlay').onclick = async () => {
-    const i = S.queue.findIndex((x) => itemKey(x) === itemKey(last));
-    if (i >= 0) {
-      await playQueueAt(i);
-    } else {
-      loadQueue([last], 0); // 队列里没有就把它排在最前面播
-      await playQueueAt(0);
-    }
-  };
-}
-
 // 热门条目（搜索结果格式）→ 可入队列的曲目对象
 function hotToItem(r) {
   return {
@@ -299,29 +253,8 @@ function cardHtml(o, opts) {
   </div>`;
 }
 
-async function renderHome() {
-  renderHomeHero();
-
-  // 最近播放（最多 8 个）
-  $('#homeRecent').innerHTML = S.history.length
-    ? S.history.slice(0, 8)
-        .map((it, i) => cardHtml(it, {
-          idx: i, kind: 'recent',
-          sub: it.up || '',
-        }))
-        .join('')
-    : '<div class="muted">还没有播放记录</div>';
-  bindHomeCards($('#homeRecent'), 'recent');
-
-  // 我的收藏夹
-  $('#homeFolders').innerHTML = S.folders.length
-    ? S.folders.map((f, i) => cardHtml(
-        { title: f.name, cover: (f.items[0] || {}).cover || '', duration: 0 },
-        { idx: i, kind: 'folder', sub: `${f.items.length} 首` }
-      )).join('')
-    : '<div class="muted">还没有收藏夹</div>';
-  bindHomeCards($('#homeFolders'), 'folder');
-
+// 首页只放「音乐区热门」；最近播放和收藏夹入口不在这里
+function renderHome() {
   if (S.hot.length) renderHotCards(); // 已拿到过就直接画，避免每次切首页都空白
 }
 
@@ -330,36 +263,14 @@ function bindHomeCards(box, kind) {
     const i = +el.dataset.idx;
     el.onclick = async (e) => {
       const act = e.target.dataset.act;
+      const r = S.hot[i];
+      if (!r) return;
       if (act) {
         e.stopPropagation();
-        if (kind === 'folder') {
-          S.active = S.folders[i].id;
-          save(); renderFolders(); renderList(); showView('library');
-          return;
-        }
-        if (kind === 'recent') {
-          const it = S.history[i];
-          if (act === 'play') { loadQueue([it], 0); playQueueAt(0); }
-          else qToastAdd([it]);
-          return;
-        }
-        // 热门：按搜索结果处理（多 P 会自动弹分 P 面板）
-        const r = S.hot[i];
-        if (!r) return;
-        if (act === 'add') { await addToFolder(r); return; }
-        if (act === 'queue') { qToastAdd([hotToItem(r)]); return; }
-        await playSearchItem(r);
-        return;
+        if (act === 'add') { await addToFolder(r); return; }   // 加入收藏夹
+        if (act === 'queue') { qToastAdd([hotToItem(r)]); return; } // 加入播放列表
       }
-      // 卡片本体
-      if (kind === 'recent') { loadQueue([S.history[i]], 0); playQueueAt(0); }
-      else if (kind === 'folder') {
-        S.active = S.folders[i].id;
-        save(); renderFolders(); renderList(); showView('library');
-      } else {
-        const r = S.hot[i];
-        if (r) await playSearchItem(r);
-      }
+      await playSearchItem(r); // ▶ 或点卡片本体：多 P 会自动弹分 P 面板
     };
   });
 }
@@ -1246,8 +1157,6 @@ async function playTrack(it, idx) {
     $('#bUp').textContent = it.up || it.author || '';
     curKbps = track.kbps || 0;
     syncQualityBtn();
-    pushHistory(it); // 记进最近播放，首页「继续播放」用它
-    if (S.view === 'home') renderHome();
     $('#play').textContent = '⏸';
     B.setTrayTip(it.title); // 托盘悬停时显示当前曲目
     renderList();
