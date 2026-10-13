@@ -286,13 +286,25 @@ function renderHotCards() {
   bindHomeCards(box, 'hot');
 }
 
+// 首页就是搜索「音乐」的结果；只做很轻的过滤：
+// 剔掉课程/教程/测评这类"节目"，以及过短(<1分钟)和过长(>3小时，多为直播回放)的
+const HOME_KW = '音乐';
+const HOME_BAD = /教程|教学|课程|入门|进阶|零基础|怎么|如何|测评|开箱|挑战|vs|reaction|综艺|解说|访谈|预告|直播回放/i;
+const durSec = (d) =>
+  typeof d === 'string' && d.includes(':')
+    ? d.split(':').reduce((a, b) => a * 60 + (+b || 0), 0)
+    : Number(d) || 0;
+
 async function loadHot() {
   try {
-    const r = await B.hot();
-    S.hot = r.list || [];
+    const r = await B.search(HOME_KW, 1);
+    S.hot = (r.list || []).filter((x) => {
+      const d = durSec(x.duration);
+      return d >= 60 && d <= 10800 && !HOME_BAD.test(x.title || '');
+    });
   } catch (e) {
     S.hot = [];
-    $('#homeHot').innerHTML = `<div class="muted">热门列表加载失败：${esc(e.message || '')}</div>`;
+    $('#homeHot').innerHTML = `<div class="muted">加载失败：${esc(e.message || '')}</div>`;
     return;
   }
   renderHotCards();

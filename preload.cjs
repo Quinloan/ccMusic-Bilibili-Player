@@ -8,7 +8,6 @@ contextBridge.exposeInMainWorld('api', {
   // B 站
   search: (keyword, page) => ipcRenderer.invoke('bili:search', keyword, page),
   video: (id) => ipcRenderer.invoke('bili:video', id),
-  hot: () => ipcRenderer.invoke('bili:hot'),
   playurl: (bvid, cid) => ipcRenderer.invoke('bili:playurl', bvid, cid),
   resolve: (url) => ipcRenderer.invoke('bili:resolve', url),
 
