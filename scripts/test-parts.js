@@ -93,12 +93,16 @@ async function getWin() {
   })`);
   log('[5] 再次打开(应全部标记已在歌单且不勾选):', JSON.stringify(again));
 
-  // 6. 仅播放：只进播放列表，收藏夹数量必须不变
+  // 6. 仅播放：只进播放列表，收藏夹数量必须不变（默认不真播，只验证队列与计数）
   const before = await run(`folder().items.length`);
   await run(`$('#pmAll').click()`);
   await wait(200);
-  await run(`$('#pmPlayOnly').click()`);
-  await wait(3500);
+  if (withAudio) {
+    await run(`$('#pmPlayOnly').click()`);
+  } else {
+    await run(`loadQueue(pmEntries(), 0)`); // 只入队，不触发播放
+  }
+  await wait(1200);
   const only = await run(`({
     libCount: folder().items.length,
     queue: S.queue.length, qcur: S.qcur,
