@@ -58,13 +58,14 @@ for name in pngs:
 
 # 3. 更新说明：在开头插入预览区（若已插入过则先移除旧区再插入新的，保证可重复执行）
 import re
-label = {"01-library.png": "主界面（收藏夹 + 正在播放）",
-         "02-search.png": "搜索结果（一键加入收藏夹）",
-         "03-settings.png": "设置（居中悬浮卡片）",
-         "04-queue.png": "播放列表（悬浮卡片，与收藏夹分离）",
-         "05-group.png": "歌单多 P 分组（收起态，点击展开）",
-         "06-menu.png": "账号菜单",
-         "07-confirm.png": "删除前的确认弹窗"}.get
+label = {"01-home.png": "首页（搜索「音乐」的热门结果）",
+         "02-library.png": "收藏夹（多 P 分组可折叠）",
+         "03-search.png": "搜索结果（一键加入收藏夹）",
+         "04-settings.png": "设置（居中悬浮卡片）",
+         "05-queue.png": "播放列表（悬浮卡片，与收藏夹分离）",
+         "06-group.png": "歌单多 P 分组（收起态，点击展开）",
+         "07-confirm.png": "删除前的确认弹窗",
+         "08-menu.png": "账号菜单"}.get
 lines = ["## 界面预览", ""]
 for name, u in urls:
     lines.append("![%s](%s)" % (label(name) or name, u))

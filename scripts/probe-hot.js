@@ -29,8 +29,9 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   await wait(3000);
   const r = await win.webContents.executeJavaScript(`(async () => {
     try {
-      const h = await window.api.hot();
-      return { n: (h.list || []).length, first: (h.list || []).slice(0, 3).map(x => x.title + ' / ' + x.author + ' / ' + x.duration) };
+      const h = await window.api.search('音乐', 1);
+      const ls = await window.api.loginState();
+      return { n: (h.list || []).length, logged: ls.logged, first: (h.list || []).slice(0, 2).map(x => x.title + ' / ' + x.author) };
     } catch (e) { return { err: e.message }; }
   })()`);
   console.log('[hot]', JSON.stringify(r, null, 1));

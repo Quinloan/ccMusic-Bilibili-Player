@@ -214,13 +214,20 @@ app.whenReady().then(async () => {
     t: Math.round(performance.now()),
   })`).catch((e) => ({ diagErr: e.message }));
   console.log('diag2:', JSON.stringify(diag2));
-  // capturePage 偶发拍到空白帧（合成器未重绘），多拍几张取字节最大的那张
-  let best = img.toPNG();
-  for (let k = 0; k < 4; k++) {
-    const shot = await win.webContents.capturePage();
-    const buf = shot.toPNG();
-    if (buf.length > best.length) best = buf;
-    await new Promise((r) => setTimeout(r, 350));
+  // capturePage 偶发拍到空白帧或抛 UnknownVizError（合成器未重绘），多拍几张取字节最大的
+  let best = null;
+  try { best = img.toPNG(); } catch (e) { /* 首拍失败就靠重试 */ }
+  for (let k = 0; k < 6; k++) {
+    try {
+      const shot = await win.webContents.capturePage();
+      const buf = shot.toPNG();
+      if (!best || buf.length > best.length) best = buf;
+    } catch (e) { /* 这次没拍到，下一拍再来 */ }
+    await new Promise((r) => setTimeout(r, 400));
+  }
+  if (!best) {
+    console.log('截图失败：合成器一直没就绪，重跑一次试试');
+    app.exit(1);
   }
   fs.writeFileSync(out, best);
   console.log('saved:', out, Math.round(best.length / 1024) + 'KB');

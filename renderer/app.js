@@ -135,7 +135,7 @@ async function init() {
 const LOGO_SRC = '../assets/icon.png';
 let accountState = { logged: false };
 
-async function checkLogin() {
+async function checkLogin(retried) {
   const av = $('#avatarImg');
   let st;
   try {
@@ -152,6 +152,8 @@ async function checkLogin() {
     av.src = LOGO_SRC;
     av.title = '登录状态检查失败 · 点按重试';
     accountState = { logged: false, stale: true };
+    // 网络波动导致的检查失败，10 秒后自动重试一次
+    if (!retried) setTimeout(() => { if (accountState.stale) checkLogin(true); }, 10000);
   } else {
     av.src = LOGO_SRC;
     av.title = '未登录 · 点按登录';
@@ -294,7 +296,7 @@ const durSec = (d) =>
     ? d.split(':').reduce((a, b) => a * 60 + (+b || 0), 0)
     : Number(d) || 0;
 
-async function loadHot() {
+async function loadHot(attempt = 0) {
   try {
     const r = await B.search(HOME_KW, 1);
     S.hot = (r.list || []).filter((x) => {
@@ -303,7 +305,17 @@ async function loadHot() {
     });
   } catch (e) {
     S.hot = [];
-    $('#homeHot').innerHTML = `<div class="muted">加载失败：${esc(e.message || '')}</div>`;
+    // 网络波动很常见：自动重试两次（5s / 10s），仍失败才给手动按钮
+    if (attempt < 2) {
+      const waitSec = attempt === 0 ? 5 : 10;
+      $('#homeHot').innerHTML = `<div class="muted">加载失败，${waitSec} 秒后自动重试…</div>`;
+      setTimeout(() => { if (S.view === 'home') loadHot(attempt + 1); }, waitSec * 1000);
+    } else {
+      $('#homeHot').innerHTML =
+        `<div class="muted">加载失败，<button id="hotRetry" style="padding:2px 10px;font-size:12px">点此重试</button></div>`;
+      const b = $('#hotRetry');
+      if (b) b.onclick = () => loadHot(0);
+    }
     return;
   }
   renderHotCards();
