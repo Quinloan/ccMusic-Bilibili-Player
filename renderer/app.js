@@ -150,7 +150,7 @@ async function checkLogin(retried) {
     accountState = { logged: true, st };
   } else if (st.stale) {
     av.src = LOGO_SRC;
-    av.title = '登录状态检查失败 · 点按重试';
+    av.title = st.saved ? '已登录（网络波动，状态稍后恢复）' : '登录状态检查失败 · 点按重试';
     accountState = { logged: false, stale: true };
     // 网络波动导致的检查失败，10 秒后自动重试一次
     if (!retried) setTimeout(() => { if (accountState.stale) checkLogin(true); }, 10000);
@@ -189,7 +189,8 @@ function openAccountMenu() {
       <div><div class="h-name">${esc(st.name || '已登录')}</div><div class="h-sub">B 站等级 Lv${st.level ?? '-'}</div></div>`;
   } else if (accountState.stale) {
     head.innerHTML = `<img class="logo-avatar" src="${LOGO_SRC}" alt="" />
-      <div><div class="h-name">登录状态检查失败</div><div class="h-sub">网络或接口暂时不可用</div></div>`;
+      <div><div class="h-name">${st.saved ? '已登录（网络波动）' : '登录状态检查失败'}</div>
+      <div class="h-sub">${st.saved ? '凭据有效，稍后自动恢复' : '网络或接口暂时不可用'}</div></div>`;
   } else {
     head.innerHTML = `<img class="logo-avatar" src="${LOGO_SRC}" alt="" />
       <div><div class="h-name">未登录</div><div class="h-sub">登录后可解锁更高音质</div></div>`;
@@ -350,11 +351,16 @@ const durSec = (d) =>
 
 async function loadHot(attempt = 0) {
   try {
-    const r = await B.search(HOME_KW, 1);
-    S.hot = (r.list || []).filter((x) => {
+    // 拉两页：第一页过滤后往往只剩十来个，两页够铺满
+    const [r1, r2] = await Promise.all([B.search(HOME_KW, 1), B.search(HOME_KW, 2).catch(() => ({ list: [] }))]);
+    const seen = new Set();
+    S.hot = [];
+    for (const x of [...(r1.list || []), ...(r2.list || [])]) {
+      if (seen.has(x.bvid)) continue;
+      seen.add(x.bvid);
       const d = durSec(x.duration);
-      return d >= 60 && !HOME_BAD.test(x.title || '');
-    });
+      if (d >= 60 && !HOME_BAD.test(x.title || '')) S.hot.push(x);
+    }
   } catch (e) {
     S.hot = [];
     // 网络波动很常见：自动重试两次（5s / 10s），仍失败才给手动按钮
@@ -465,14 +471,19 @@ function groupHtml(f, start, count, collapsed) {
   const it = f.items[start];
   const vtitle = it.vtitle || it.title;
   const total = f.items.slice(start, start + count).reduce((s, x) => s + (+x.duration || 0), 0);
+  // 分歌切出的组显示「切分 N 首」，多 P 合集显示「合集 N P」
+  const isSplitGroup = !!it.split;
+  const gnum = isSplitGroup ? count + ' 首' : count + 'P';
+  const gtagText = isSplitGroup ? `智能切分 · ${count} 首` : `合集 ${count}P`;
+  const hint = isSplitGroup ? `共 ${count} 首曲目，点击${collapsed ? '展开' : '收起'}` : `共 ${count} 个分 P，点击${collapsed ? '展开' : '收起'}`;
   return `<div class="row group${collapsed ? '' : ' open'}" data-bvid="${esc(it.bvid)}" data-start="${start}" data-count="${count}"
-    title="${esc(vtitle)}（共 ${count} 个分 P，点击${collapsed ? '展开' : '收起'}）">
+    title="${esc(vtitle)}（${hint}）">
     <div class="gcover">
       <img src="${esc(it.cover || '')}" loading="lazy" />
-      <span class="gnum">${count}P</span>
+      <span class="gnum">${gnum}</span>
     </div>
     <div class="meta">
-      <div class="t"><span class="gtag">合集 ${count}P</span>${esc(vtitle)}</div>
+      <div class="t"><span class="gtag">${gtagText}</span>${esc(vtitle)}</div>
       <div class="u">${esc(it.up || '')} · 共 ${fmtTotal(total)} · 点击${collapsed ? '展开全部' : '收起'}</div>
     </div>
     <span class="garrow">${collapsed ? '▸' : '▾'}</span>
@@ -492,8 +503,8 @@ function renderList() {
   }
   // 相邻的同视频多 P 条目聚成一组：可合并成一行，也可展开
   const collapsed = collapsedSet();
-  // 分歌切出来的曲目（有 startSec）不再按 bvid 折叠成多 P 组
-  const isPart = (it) => !it.split && (!!it.vtitle || (+it.page || 1) > 1);
+  // 同一视频的曲目聚成一组：分 P 合集与"单 P 智能切分"出的曲目都折叠，组头显示视频标题
+  const isPart = (it) => !!it.vtitle || (+it.page || 1) > 1;
   let html = '';
   let i = 0;
   while (i < f.items.length) {

@@ -185,7 +185,7 @@ ipcMain.handle('login:state', async () => {
     return { logged: false };
   }
   // 接口失败（网络/风控）：保留凭据，只是暂时查不到状态
-  return { logged: false, stale: true };
+  return { logged: false, stale: true, saved: !!cookies.SESSDATA }; // saved=本地有登录凭据，网络失败时用于中性提示
 });
 
 ipcMain.handle('login:logout', async () => {
@@ -514,6 +514,7 @@ ipcMain.handle('split:analyze', async (e, bvid, cid, maxSec) => {
     }
     send({ stage: 'identify', pct: Math.round((i / tracks.length) * 100), done: i, total: tracks.length });
     if (hit) { t.title = hit.name; t.artist = hit.artist || ''; named++; }
+    await new Promise((r2) => setTimeout(r2, 350)); // 请求间隔，防接口限频
   }
 
   return { tracks, duration: +secs.toFixed(1), silences: silences.length, named };
