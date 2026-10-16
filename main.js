@@ -9,6 +9,7 @@ const { createHash } = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { spawn } = require('node:child_process');
 
 // GitHub 仓库（用于「关于」页与检查更新）
 const GITHUB_REPO = process.env.CCMUSIC_REPO || 'Quinloan/ccMusic';
@@ -300,7 +301,7 @@ ipcMain.handle('app:copyText', (_e, text) => {
 });
 
 const streamCache = new Map();
-ipcMain.handle('bili:playurl', async (_e, bvid, cid) => {
+async function getPlayurl(bvid, cid) {
   const key = `${bvid}:${cid}`;
   const hit = streamCache.get(key);
   if (hit && hit.expireAt > Date.now()) return hit.payload;
@@ -332,6 +333,96 @@ ipcMain.handle('bili:playurl', async (_e, bvid, cid) => {
   };
   streamCache.set(key, { payload, expireAt: payload.expireAt });
   return payload;
+}
+
+ipcMain.handle('bili:playurl', (_e, bvid, cid) => getPlayurl(bvid, cid));
+
+// ---------------------------------------------------------------- 智能分歌
+// 长视频（几小时、无分 P）按歌与歌之间的静音切成一首首曲目
+const SPLIT_RATE = 8000;  // 8kHz 单声道足够判断静音，数据量小
+const SPLIT_TH = 0.008;   // RMS 低于此值算静音（相对满量程）
+const SPLIT_MIN_SIL = 1.5;  // 静音至少持续这么久才算切点
+const SPLIT_MIN_TRACK = 60; // 单曲最短 60 秒，滤掉过短的碎片
+
+function ffmpegPath() {
+  // 打包后 ffmpeg 随 resources 走；开发模式就在仓库 resources/
+  return app.isPackaged
+    ? path.join(process.resourcesPath, 'ffmpeg-mini.exe')
+    : path.join(__dirname, 'resources', 'ffmpeg-mini.exe'); // main.js 与 resources 同级
+}
+
+ipcMain.handle('split:analyze', async (e, bvid, cid) => {
+  const send = (p) => { try { e.sender.send('split:progress', p); } catch (_) {} };
+  const ffBin = ffmpegPath();
+  if (!fs.existsSync(ffBin)) throw new Error('缺少解码组件 ffmpeg-mini.exe');
+
+  const p = await getPlayurl(bvid, cid);
+  const track = (p.tracks && p.tracks[0]) || p.flac || p.dolby;
+  if (!track || !track.url) throw new Error('没有可用音轨');
+
+  send({ stage: 'download', pct: 0 });
+  const res = await ufetch(track.url, { headers: apiHeaders(), dispatcher: agent });
+  const total = +(res.headers.get('content-length') || 0);
+
+  const ff = spawn(ffBin, ['-i', 'pipe:0', '-f', 's16le', '-ac', '1', '-ar', String(SPLIT_RATE), 'pipe:1']);
+  let bytes = 0, pcmBytes = 0;
+  let winAcc = 0, winN = 0;
+  const WIN = SPLIT_RATE / 10; // 每 100ms 一个窗口
+  const rms = [];
+  let ffError = '';
+
+  ff.stdout.on('data', (buf) => {
+    pcmBytes += buf.length;
+    for (let i = 0; i + 1 < buf.length; i += 2) {
+      const s = buf.readInt16LE(i) / 32768;
+      winAcc += s * s; winN++;
+      if (winN >= WIN) { rms.push(Math.sqrt(winAcc / winN)); winAcc = 0; winN = 0; }
+    }
+  });
+  ff.stderr.on('data', (d) => { const s = d.toString(); if (s.trim()) ffError = s.slice(-300); });
+
+  const pump = (async () => {
+    let lastPct = -1;
+    for await (const chunk of res.body) {
+      if (!ff.stdin.writable) break;
+      bytes += chunk.length;
+      if (total) {
+        const pct = Math.min(99, Math.round((bytes / total) * 100));
+        if (pct !== lastPct && pct % 5 === 0) { lastPct = pct; send({ stage: 'download', pct }); }
+      }
+      if (!ff.stdin.write(chunk)) await new Promise((r) => ff.stdin.once('drain', r));
+    }
+    ff.stdin.end();
+  })();
+
+  const closed = new Promise((r) => ff.on('close', r));
+  await Promise.all([pump.catch(() => {}), closed]);
+
+  const secs = pcmBytes / 2 / SPLIT_RATE;
+  if (secs < 10) throw new Error('音频太短，未分析出内容');
+
+  send({ stage: 'analyze', pct: 100 });
+  // 找静音段
+  const silences = [];
+  let runStart = -1;
+  for (let i = 0; i < rms.length; i++) {
+    const t = i / 10;
+    if (rms[i] < SPLIT_TH) { if (runStart < 0) runStart = t; }
+    else if (runStart >= 0) {
+      if (t - runStart >= SPLIT_MIN_SIL) silences.push({ from: runStart, to: t });
+      runStart = -1;
+    }
+  }
+  // 按静音中点切，太短的碎片丢弃
+  const tracks = [];
+  let start = 0;
+  silences.forEach((s) => {
+    const cut = (s.from + s.to) / 2;
+    if (cut - start >= SPLIT_MIN_TRACK) { tracks.push({ start: +start.toFixed(1), end: +cut.toFixed(1) }); start = cut; }
+  });
+  if (secs - start >= SPLIT_MIN_TRACK) tracks.push({ start: +start.toFixed(1), end: +secs.toFixed(1) });
+
+  return { tracks, duration: +secs.toFixed(1), silences: silences.length };
 });
 
 ipcMain.handle('login:qrcode', async () => {

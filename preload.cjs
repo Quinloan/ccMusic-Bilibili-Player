@@ -11,6 +11,10 @@ contextBridge.exposeInMainWorld('api', {
   playurl: (bvid, cid) => ipcRenderer.invoke('bili:playurl', bvid, cid),
   resolve: (url) => ipcRenderer.invoke('bili:resolve', url),
 
+  // 智能分歌（长视频按静音切分成多首）
+  splitAnalyze: (bvid, cid) => ipcRenderer.invoke('split:analyze', bvid, cid),
+  onSplitProgress: (cb) => { ipcRenderer.on('split:progress', (_e, p) => cb(p)); },
+
   // 系统
   openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
   copyText: (text) => ipcRenderer.invoke('app:copyText', text),

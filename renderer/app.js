@@ -227,6 +227,53 @@ function openAccountMenu() {
   m.hidden = false;
 }
 
+// ---------------------------------------------------------------- 智能分歌
+// 几小时的长视频（无分 P）按歌与歌之间的静音切成一首首曲目
+const SPLIT_MIN_DURATION = 1800; // 超过 30 分钟才值得分析
+let lastSplitTip = '';
+if (B.onSplitProgress) {
+  B.onSplitProgress((p) => {
+    const tip = p.stage === 'download'
+      ? `分歌：下载音频 ${p.pct || 0}%`
+      : '分歌：正在分析静音…';
+    if (tip === lastSplitTip) return;
+    lastSplitTip = tip;
+    toast(tip);
+  });
+}
+
+async function maybeSplit(f, item) {
+  if (!item || item.split) return;
+  if (!(item.duration >= SPLIT_MIN_DURATION)) return;
+  if ((+item.page || 1) > 1) return; // 只处理整段，分 P 不重复分析
+  lastSplitTip = '';
+  toast('长视频，正在分析分歌…');
+  let r;
+  try {
+    r = await B.splitAnalyze(item.bvid, item.cid);
+  } catch (e) {
+    toast('分歌失败：' + (e.message || ''));
+    return;
+  }
+  if (!r.tracks || r.tracks.length < 2) {
+    toast('没检出明显的分曲间隔，保持整段');
+    return;
+  }
+  const idx = f.items.indexOf(item);
+  if (idx < 0) return;
+  const tracks = r.tracks.map((t, i) => ({
+    ...item,
+    title: `曲目 ${i + 1}`,
+    duration: Math.round(t.end - t.start),
+    startSec: t.start,
+    endSec: t.end,
+    split: true,
+  }));
+  f.items.splice(idx, 1, ...tracks); // 用切好的曲目替换原来那一整段
+  save(); renderFolders(); renderList();
+  toast(`已切成 ${tracks.length} 首`);
+}
+
 // ---------------------------------------------------------------- 首页
 // 热门条目（搜索结果格式）→ 可入队列的曲目对象
 function hotToItem(r) {
@@ -382,8 +429,8 @@ function renderFolders() {
 
 function rowHtml(it, i, extra) {
   const pg = +it.page || 1;
-  // 多 P 视频的分 P 条目：标题前带 P 号徽标，悬浮提示所属视频
-  const badge = pg > 1 || (it.vtitle && it.vtitle !== it.title) ? `<span class="ptag">P${pg}</span>` : '';
+  // 多 P 视频的分 P 条目：标题前带 P 号徽标，悬浮提示所属视频（分歌切出的曲目不是分 P，不带）
+  const badge = !it.split && (pg > 1 || (it.vtitle && it.vtitle !== it.title)) ? `<span class="ptag">P${pg}</span>` : '';
   return `<div class="row ${extra || ''} ${i === S.cur ? 'on' : ''}" data-i="${i}" title="${esc(it.vtitle || it.title)}">
     <img src="${esc(it.cover || '')}" loading="lazy" />
     <div class="meta">
@@ -440,7 +487,8 @@ function renderList() {
   }
   // 相邻的同视频多 P 条目聚成一组：可合并成一行，也可展开
   const collapsed = collapsedSet();
-  const isPart = (it) => !!it.vtitle || (+it.page || 1) > 1;
+  // 分歌切出来的曲目（有 startSec）不再按 bvid 折叠成多 P 组
+  const isPart = (it) => !it.split && (!!it.vtitle || (+it.page || 1) > 1);
   let html = '';
   let i = 0;
   while (i < f.items.length) {
@@ -833,6 +881,10 @@ async function pmCommit(action) {
   save(); renderFolders(); renderList();
   toast(`已加入 ${added} 首到《${f.name}》${dup ? `（${dup} 首已存在，已跳过）` : ''}`);
 
+  // 长视频后台切成曲目（一次只处理一个，避免同时下载多份大音频）
+  const long = f.items.find((x) => !x.split && x.duration >= SPLIT_MIN_DURATION && (+x.page || 1) === 1);
+  if (long) maybeSplit(f, long);
+
   if (action === 'addplay') {
     if (!added && !dup) return;
     showView('library');
@@ -869,6 +921,7 @@ async function addToFolder(r) {
     });
     save(); renderFolders(); renderList();
     toast(`已加入《${f.name}》`);
+    maybeSplit(f, f.items[f.items.length - 1]); // 长视频后台切成曲目
   } catch (e) {
     toast('加入失败：' + e.message);
   }
@@ -1163,14 +1216,26 @@ async function migrateOldPartItems() {
   renderQueue();
 }
 
+// 分歌曲目的播放区间（null = 整段播放）
+let curSplitStart = null;
+let curSplitEnd = null;
+
 async function playTrack(it, idx) {
   try {
     await ensureCid(it);
     const p = await B.playurl(it.bvid, it.cid);
     const track = pickTrack(p);
     if (idx !== undefined) S.cur = idx;
+    // 分歌曲目只播自己那一段：播完由 timeupdate 自动接下一首
+    curSplitStart = it.split && it.startSec != null ? it.startSec : null;
+    curSplitEnd = it.split && it.endSec != null ? it.endSec : null;
     audio.src = track.url;
     await audio.play();
+    if (curSplitStart != null) {
+      const seekTo = () => { try { audio.currentTime = curSplitStart; } catch (e) {} };
+      if (audio.readyState >= 1) seekTo();
+      else audio.addEventListener('loadedmetadata', seekTo, { once: true });
+    }
     // 音频图要在真正播放后才建（首次播放有用户手势，AudioContext 才不会被挂起）
     applyBalanceRouting();
     if (ac && ac.state === 'suspended') await ac.resume().catch(() => {});
@@ -1526,11 +1591,27 @@ audio.onended = () => {
 };
 audio.ontimeupdate = () => {
   if (!audio.duration) return;
+  const st = curSplitStart, en = curSplitEnd;
+  if (st != null && en != null) {
+    if (audio.currentTime >= en) { step(1); return; } // 这首播完，自动接下一首
+    const span = Math.max(1, en - st);
+    const pos = Math.max(0, audio.currentTime - st);
+    $('#seek').value = String(Math.round(Math.min(1, pos / span) * 1000));
+    $('#cur').textContent = fmt(pos);
+    $('#dur').textContent = fmt(span);
+    return;
+  }
   $('#seek').value = String(Math.round((audio.currentTime / audio.duration) * 1000));
   $('#cur').textContent = fmt(audio.currentTime);
   $('#dur').textContent = fmt(audio.duration);
 };
 $('#seek').oninput = () => {
+  const st = curSplitStart, en = curSplitEnd;
+  if (st != null && en != null) {
+    // 分歌曲目：拖动只在自己那一段里走
+    audio.currentTime = st + ($('#seek').value / 1000) * (en - st);
+    return;
+  }
   if (audio.duration) audio.currentTime = ($('#seek').value / 1000) * audio.duration;
 };
 // 音量走感知曲线：滑块位置 → 音量 = 位置²

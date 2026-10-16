@@ -16,6 +16,7 @@ const openSettings = process.argv.includes('--settings');
 const collapseGroups = process.argv.includes('--collapse');
 const shotConfirm = process.argv.includes('--confirm');
 const shotHome = process.argv.includes('--home');
+const shotSplit = process.argv.includes('--split');
 
 // 演示数据注入脚本（在渲染进程执行）
 const DEMO_JS = `
@@ -175,6 +176,25 @@ app.whenReady().then(async () => {
       "document.querySelector('#queuePanel').hidden = false; renderQueue(); 'ok'"
     );
     await new Promise((r) => setTimeout(r, 300));
+  }
+  if (shotSplit) {
+    const rSplit = await win.webContents.executeJavaScript(`(function () {
+      // 把演示歌单第一项替换成"已切好的曲目"，验证分歌曲目的显示
+      const f = S.folders[0];
+      const base = f.items[0];
+      const cuts = [[0, 209], [209, 436], [436, 701], [701, 913], [913, 1180]];
+      f.items = cuts.map(function (c, i) {
+        return Object.assign({}, base, {
+          title: '曲目 ' + (i + 1), vtitle: '【周杰伦】50首精选合集',
+          duration: Math.round(c[1] - c[0]), startSec: c[0], endSec: c[1], split: true,
+        });
+      });
+      S.cur = 0;
+      showView('library'); renderFolders(); renderList();
+      return 'ok rows=' + document.querySelectorAll('#list .row').length;
+    })()`);
+    console.log('split inject:', rSplit);
+    await new Promise((r) => setTimeout(r, 400));
   }
   if (shotHome) {
     await win.webContents.executeJavaScript(
