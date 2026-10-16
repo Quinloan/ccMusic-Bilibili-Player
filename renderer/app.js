@@ -229,7 +229,7 @@ function openAccountMenu() {
 
 // ---------------------------------------------------------------- 智能分歌
 // 几小时的长视频（无分 P）按歌与歌之间的静音切成一首首曲目
-const SPLIT_MIN_DURATION = 1800; // 超过 30 分钟才值得分析
+const SPLIT_MIN_DURATION = 600; // 超过 10 分钟的长视频就按静音切分
 let lastSplitTip = '';
 if (B.onSplitProgress) {
   B.onSplitProgress((p) => {
