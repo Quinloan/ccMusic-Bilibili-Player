@@ -51,11 +51,15 @@ jobs:
             --enable-decoder=aac,mp3,flac,opus,vorbis,pcm_s16le \
             --enable-parser=aac,mp3,flac,opus,vorbis \
             --enable-protocol=file,pipe \
-            --enable-muxer=s16le,null \
+            --enable-muxer=pcm_s16le,wav,null \
             --enable-encoder=pcm_s16le \
             --enable-small
-          echo "--- configure 结果 ---"
-          grep -E "^(CONFIG_SWSCALE|CONFIG_AVFILTER|CONFIG_NETWORK|CONFIG_GPL)" config.h || true
+          echo "--- 已启用的 muxer ---"
+          grep -E "CONFIG_.*_MUXER=1" config.h || true
+          echo "--- 已启用的 filter ---"
+          grep -E "CONFIG_.*_FILTER=1" config.h || true
+          echo "--- 应关闭项 ---"
+          grep -E "^(CONFIG_GPL|CONFIG_NETWORK|CONFIG_SWSCALE)" config.h || true
 
       - name: 编译
         run: |
