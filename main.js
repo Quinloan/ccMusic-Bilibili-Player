@@ -283,6 +283,7 @@ ipcMain.handle('bili:video', async (_e, id) => {
     videos: d.videos || parts.length,
     parts,
     season,
+    desc: d.desc || '', // 简介：常含「00:00 歌名」的歌单时间戳，智能分歌用它取标题
   };
 });
 
