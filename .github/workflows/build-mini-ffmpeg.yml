@@ -1,0 +1,78 @@
+name: build-mini-ffmpeg
+
+# 裁剪版 ffmpeg：只保留解封装(mov/mp3/flac/ogg) + 解码(aac/mp3/flac/opus/vorbis) + PCM 输出
+# 砍掉全部视频、滤镜、编码器、网络协议，纯 LGPL，产物用于「智能分歌」的静音检测
+on:
+  workflow_dispatch:
+    inputs:
+      ffmpeg_version:
+        description: 'ffmpeg 源码版本'
+        required: false
+        default: '7.1'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 安装交叉编译工具链
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mingw-w64 nasm make gcc curl xz-utils
+          x86_64-w64-mingw32-gcc --version | head -1
+
+      - name: 下载 ffmpeg 源码
+        run: |
+          curl -L -o ffmpeg.tar.xz "https://ffmpeg.org/releases/ffmpeg-${{ github.event.inputs.ffmpeg_version }}.tar.xz"
+          mkdir -p src && tar xf ffmpeg.tar.xz -C src --strip-components=1
+          cd src && ./version.sh
+
+      - name: 裁剪配置
+        run: |
+          cd src
+          ./configure \
+            --prefix=$GITHUB_WORKSPACE/out \
+            --target-os=mingw32 \
+            --cross-prefix=x86_64-w64-mingw32- \
+            --arch=x86_64 \
+            --pkg-config=false \
+            --enable-cross-compile \
+            --enable-static --disable-shared \
+            --extra-ldflags="-static" \
+            --disable-everything \
+            --disable-gpl --disable-version3 \
+            --disable-doc --disable-debug \
+            --disable-avdevice --disable-swscale --disable-postproc \
+            --disable-network --disable-autodetect \
+            --disable-ffprobe --disable-ffplay \
+            --enable-swresample \
+            --enable-demuxer=mov,mp3,flac,ogg \
+            --enable-decoder=aac,mp3,flac,opus,vorbis \
+            --enable-parser=aac,mp3,flac,opus,vorbis \
+            --enable-protocol=file,pipe \
+            --enable-muxer=s16le,null \
+            --enable-encoder=pcm_s16le \
+            --enable-small
+          echo "--- configure 结果 ---"
+          grep -E "^(CONFIG_SWSCALE|CONFIG_AVFILTER|CONFIG_NETWORK|CONFIG_GPL)" config.h || true
+
+      - name: 编译
+        run: |
+          cd src
+          make -j$(nproc)
+          make install
+
+      - name: 检查产物
+        run: |
+          cd out/bin
+          ls -lh ffmpeg.exe
+          x86_64-w64-mingw32-strip ffmpeg.exe 2>/dev/null || true
+          echo "--- strip 后 ---"
+          ls -lh ffmpeg.exe
+          x86_64-w64-mingw32-objdump -p ffmpeg.exe 2>/dev/null | grep -i "DLL Name" | head -10 || true
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-mini-win64
+          path: out/bin/ffmpeg.exe
+          retention-days: 90
