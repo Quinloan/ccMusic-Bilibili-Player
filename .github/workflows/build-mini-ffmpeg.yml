@@ -45,8 +45,10 @@ jobs:
             --disable-network --disable-autodetect \
             --disable-ffprobe --disable-ffplay \
             --enable-swresample \
-            --enable-demuxer=mov,mp3,flac,ogg \
-            --enable-decoder=aac,mp3,flac,opus,vorbis \
+            --enable-avfilter \
+            --enable-filter=aresample,aformat,abuffer,abuffersink \
+            --enable-demuxer=mov,mp3,flac,ogg,wav \
+            --enable-decoder=aac,mp3,flac,opus,vorbis,pcm_s16le \
             --enable-parser=aac,mp3,flac,opus,vorbis \
             --enable-protocol=file,pipe \
             --enable-muxer=s16le,null \
@@ -69,6 +71,19 @@ jobs:
           echo "--- strip 后 ---"
           ls -lh ffmpeg.exe
           x86_64-w64-mingw32-objdump -p ffmpeg.exe 2>/dev/null | grep -i "DLL Name" | head -10 || true
+
+      - name: 冒烟测试（wine 跑产物：10 秒 WAV 转 PCM，期望 160000 字节）
+        run: |
+          sudo apt-get install -y wine64 >/dev/null 2>&1
+          python3 -c "
+          import wave, math, struct
+          w = wave.open('/tmp/t.wav','w'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(44100)
+          w.writeframes(b''.join(struct.pack('<h', int(20000*math.sin(2*math.pi*440*i/44100))) for i in range(44100*10)))
+          w.close()"
+          BYTES=$(wine64 out/bin/ffmpeg.exe -i /tmp/t.wav -f s16le -ac 1 -ar 8000 - 2>/dev/null | wc -c)
+          echo "PCM 输出字节数: $BYTES (期望 160000)"
+          if [ "$BYTES" -lt 150000 ]; then echo "::error::产物转换输出异常"; exit 1; fi
+          echo "✅ 冒烟测试通过"
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
