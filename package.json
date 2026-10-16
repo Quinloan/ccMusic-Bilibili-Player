@@ -53,6 +53,16 @@
       "oneClick": true,
       "createDesktopShortcut": true,
       "shortcutName": "ccMusic"
-    }
+    },
+    "extraResources": [
+      {
+        "from": "resources/ffmpeg-mini.exe",
+        "to": "ffmpeg-mini.exe"
+      },
+      {
+        "from": "resources/afp",
+        "to": "afp"
+      }
+    ]
   }
 }

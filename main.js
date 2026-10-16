@@ -344,6 +344,51 @@ const SPLIT_TH = 0.008;   // RMS 低于此值算静音（相对满量程）
 const SPLIT_MIN_SIL = 1.5;  // 静音至少持续这么久才算切点
 const SPLIT_MIN_TRACK = 60; // 单曲最短 60 秒，滤掉过短的碎片
 
+// 周期性留 PCM 采样：识别歌名时用，避免为识别再下一次音频
+const SAMPLE_EVERY = 30; // 每 30 秒留一段
+const SAMPLE_SEC = 8;    // 每段 8 秒（够生成指纹）
+
+let afpMod = null;
+function loadAfp() {
+  if (!afpMod) {
+    afpMod = require(app.isPackaged
+      ? path.join(process.resourcesPath, 'afp', 'afp.js')
+      : path.join(__dirname, 'resources', 'afp', 'afp.js'));
+  }
+  return afpMod;
+}
+
+// 音频片段 → 指纹 → 网易云匹配（只上传指纹，不上传音频）
+async function identifySong(pcm) {
+  try {
+    const { GenerateFP } = loadAfp();
+    const n = Math.floor(pcm.length / 2);
+    if (n < 8000) return null;
+    const f32 = new Float32Array(n);
+    for (let i = 0; i < n; i++) f32[i] = pcm.readInt16LE(i * 2) / 32768;
+    let e = 0; const m = Math.min(n, 8000);
+    for (let i = 0; i < m; i++) e += f32[i] * f32[i];
+    console.log('[identify] 片段: ' + n + ' 样本, RMS=' + Math.sqrt(e / m).toFixed(4));
+    const fp = await GenerateFP(f32);
+    const url = 'https://interface.music.163.com/api/music/audio/match'
+      + '?sessionId=0123456789abcdef&algorithmCode=shazam_v2'
+      + `&duration=${Math.round(n / SPLIT_RATE)}&rawdata=${encodeURIComponent(fp)}&times=1&decrypt=1`;
+    const r = await ufetch(url, {
+      headers: { 'User-Agent': UA, Referer: 'https://music.163.com/' }, dispatcher: agent,
+      signal: AbortSignal.timeout(10000), // 识别请求 10 秒超时，卡住就放弃这一首
+    });
+    const j = await r.json().catch(() => null);
+    const list = (j && j.data && j.data.result) || [];
+    if (!list.length) { console.log('[identify] 无匹配结果'); return null; }
+    const s = list[0].song || {};
+    if (!s.name) { console.log('[identify] 返回无歌名'); return null; }
+    return { name: s.name, artist: (s.artists || []).map((a) => a.name).join('/') };
+  } catch (e) {
+    console.log('[identify] 异常:', e.message);
+    return null;
+  }
+}
+
 function ffmpegPath() {
   // 打包后 ffmpeg 随 resources 走；开发模式就在仓库 resources/
   return app.isPackaged
@@ -351,7 +396,8 @@ function ffmpegPath() {
     : path.join(__dirname, 'resources', 'ffmpeg-mini.exe'); // main.js 与 resources 同级
 }
 
-ipcMain.handle('split:analyze', async (e, bvid, cid) => {
+// maxSec 可选：只分析前 N 秒（调试 / 试看用，不传则分析整段）
+ipcMain.handle('split:analyze', async (e, bvid, cid, maxSec) => {
   const send = (p) => { try { e.sender.send('split:progress', p); } catch (_) {} };
   const ffBin = ffmpegPath();
   if (!fs.existsSync(ffBin)) throw new Error('缺少解码组件 ffmpeg-mini.exe');
@@ -364,22 +410,45 @@ ipcMain.handle('split:analyze', async (e, bvid, cid) => {
   const res = await ufetch(track.url, { headers: apiHeaders(), dispatcher: agent });
   const total = +(res.headers.get('content-length') || 0);
 
-  const ff = spawn(ffBin, ['-i', 'pipe:0', '-f', 's16le', '-ac', '1', '-ar', String(SPLIT_RATE), 'pipe:1']);
+  const ffArgs = ['-i', 'pipe:0', '-f', 's16le', '-ac', '1', '-ar', String(SPLIT_RATE)];
+  if (maxSec > 0) ffArgs.push('-t', String(maxSec)); // 只解前 N 秒，下载随之停止
+  ffArgs.push('pipe:1');
+  const ff = spawn(ffBin, ffArgs);
   let bytes = 0, pcmBytes = 0;
   let winAcc = 0, winN = 0;
   const WIN = SPLIT_RATE / 10; // 每 100ms 一个窗口
   const rms = [];
   let ffError = '';
 
+  // 滚动保留最近 8 秒 PCM，每 30 秒存一份，供识别歌名用
+  const samples = [];
+  let roll = [], rollBytes = 0, nextSampleAt = SAMPLE_EVERY;
+  const ROLL_MAX = SPLIT_RATE * 2 * SAMPLE_SEC;
+  let carry = Buffer.alloc(0); // 网络分包可能奇数字节，必须跨块对齐到 16 位样本
+
   ff.stdout.on('data', (buf) => {
-    pcmBytes += buf.length;
-    for (let i = 0; i + 1 < buf.length; i += 2) {
-      const s = buf.readInt16LE(i) / 32768;
+    const merged = carry.length ? Buffer.concat([carry, buf]) : buf;
+    const usable = merged.length - (merged.length % 2);
+    carry = merged.slice(usable);
+    const aligned = merged.slice(0, usable);
+    pcmBytes += aligned.length;
+    for (let i = 0; i + 1 < aligned.length; i += 2) {
+      const s = aligned.readInt16LE(i) / 32768;
       winAcc += s * s; winN++;
       if (winN >= WIN) { rms.push(Math.sqrt(winAcc / winN)); winAcc = 0; winN = 0; }
     }
+    roll.push(aligned); rollBytes += aligned.length;
+    while (rollBytes > ROLL_MAX && roll.length) { rollBytes -= roll.shift().length; }
+    const t = pcmBytes / 2 / SPLIT_RATE;
+    if (t >= nextSampleAt) {
+      samples.push({ at: t, pcm: Buffer.concat(roll) });
+      nextSampleAt += SAMPLE_EVERY;
+    }
   });
   ff.stderr.on('data', (d) => { const s = d.toString(); if (s.trim()) ffError = s.slice(-300); });
+  // ffmpeg 提前退出（坏流/参数问题）时 stdin 会 EPIPE，必须接住否则主进程弹窗崩溃
+  ff.stdin.on('error', () => {});
+  ff.stdout.on('error', () => {});
 
   const pump = (async () => {
     let lastPct = -1;
@@ -396,9 +465,12 @@ ipcMain.handle('split:analyze', async (e, bvid, cid) => {
   })();
 
   const closed = new Promise((r) => ff.on('close', r));
-  await Promise.all([pump.catch(() => {}), closed]);
+  let downloadOk = true;
+  await Promise.all([pump.catch((err) => { downloadOk = false; console.log('[split] 下载中断:', err.message); }), closed]);
+  console.log('[split] 下载统计: content-length=' + total + ' 实际=' + bytes + ' PCM时长=' + (pcmBytes / 2 / SPLIT_RATE).toFixed(1) + 's ffExit=' + ff.exitCode);
 
   const secs = pcmBytes / 2 / SPLIT_RATE;
+  if (!downloadOk) throw new Error('音频下载中断（网络波动），请重试');
   if (secs < 10) throw new Error('音频太短，未分析出内容');
 
   send({ stage: 'analyze', pct: 100 });
@@ -422,7 +494,29 @@ ipcMain.handle('split:analyze', async (e, bvid, cid) => {
   });
   if (secs - start >= SPLIT_MIN_TRACK) tracks.push({ start: +start.toFixed(1), end: +secs.toFixed(1) });
 
-  return { tracks, duration: +secs.toFixed(1), silences: silences.length };
+  // 逐首识别歌名：避开接缝，在曲目内取多个位置尝试（长曲取 1/4、1/2、3/4 三处）
+  let named = 0;
+  for (let i = 0; i < tracks.length; i++) {
+    const t = tracks[i];
+    const span = t.end - t.start;
+    const mids = span > 240
+      ? [0.3, 0.5, 0.7].map((r) => t.start + span * r)
+      : [(t.start + t.end) / 2];
+    let hit = null;
+    for (const mid of mids) {
+      if (hit) break;
+      let best = null;
+      for (const s of samples) {
+        if (s.at < t.start + 8 || s.at > t.end - 8) continue; // 距接缝至少 8 秒
+        if (!best || Math.abs(s.at - mid) < Math.abs(best.at - mid)) best = s;
+      }
+      if (best) hit = await identifySong(best.pcm);
+    }
+    send({ stage: 'identify', pct: Math.round((i / tracks.length) * 100), done: i, total: tracks.length });
+    if (hit) { t.title = hit.name; t.artist = hit.artist || ''; named++; }
+  }
+
+  return { tracks, duration: +secs.toFixed(1), silences: silences.length, named };
 });
 
 ipcMain.handle('login:qrcode', async () => {

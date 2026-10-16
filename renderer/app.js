@@ -235,7 +235,9 @@ if (B.onSplitProgress) {
   B.onSplitProgress((p) => {
     const tip = p.stage === 'download'
       ? `分歌：下载音频 ${p.pct || 0}%`
-      : '分歌：正在分析静音…';
+      : p.stage === 'identify'
+        ? `分歌：识别歌名 ${p.done || 0}/${p.total || 0}`
+        : '分歌：正在分析静音…';
     if (tip === lastSplitTip) return;
     lastSplitTip = tip;
     toast(tip);
@@ -263,7 +265,8 @@ async function maybeSplit(f, item) {
   if (idx < 0) return;
   const tracks = r.tracks.map((t, i) => ({
     ...item,
-    title: `曲目 ${i + 1}`,
+    title: t.title || `曲目 ${i + 1}`, // 识别到歌名就用，没有就编号
+    artist: t.artist || '',
     duration: Math.round(t.end - t.start),
     startSec: t.start,
     endSec: t.end,
@@ -271,7 +274,9 @@ async function maybeSplit(f, item) {
   }));
   f.items.splice(idx, 1, ...tracks); // 用切好的曲目替换原来那一整段
   save(); renderFolders(); renderList();
-  toast(`已切成 ${tracks.length} 首`);
+  toast(r.named
+    ? `已切成 ${tracks.length} 首，识别出 ${r.named} 首歌名`
+    : `已切成 ${tracks.length} 首（未识别出歌名）`);
 }
 
 // ---------------------------------------------------------------- 首页
@@ -880,10 +885,6 @@ async function pmCommit(action) {
   }
   save(); renderFolders(); renderList();
   toast(`已加入 ${added} 首到《${f.name}》${dup ? `（${dup} 首已存在，已跳过）` : ''}`);
-
-  // 长视频后台切成曲目（一次只处理一个，避免同时下载多份大音频）
-  const long = f.items.find((x) => !x.split && x.duration >= SPLIT_MIN_DURATION && (+x.page || 1) === 1);
-  if (long) maybeSplit(f, long);
 
   if (action === 'addplay') {
     if (!added && !dup) return;

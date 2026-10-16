@@ -12,7 +12,7 @@ contextBridge.exposeInMainWorld('api', {
   resolve: (url) => ipcRenderer.invoke('bili:resolve', url),
 
   // 智能分歌（长视频按静音切分成多首）
-  splitAnalyze: (bvid, cid) => ipcRenderer.invoke('split:analyze', bvid, cid),
+  splitAnalyze: (bvid, cid, maxSec) => ipcRenderer.invoke('split:analyze', bvid, cid, maxSec),
   onSplitProgress: (cb) => { ipcRenderer.on('split:progress', (_e, p) => cb(p)); },
 
   // 系统
