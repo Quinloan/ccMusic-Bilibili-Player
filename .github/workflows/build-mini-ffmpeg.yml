@@ -22,9 +22,9 @@ jobs:
 
       - name: 下载 ffmpeg 源码
         run: |
-          curl -L -o ffmpeg.tar.xz "https://ffmpeg.org/releases/ffmpeg-${{ github.event.inputs.ffmpeg_version }}.tar.xz"
-          mkdir -p src && tar xf ffmpeg.tar.xz -C src --strip-components=1
-          cd src && ./version.sh
+          curl -L --retry 3 -o ffmpeg.tar.gz "https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n${{ github.event.inputs.ffmpeg_version }}.tar.gz"
+          mkdir -p src && tar xf ffmpeg.tar.gz -C src --strip-components=1
+          ls src/configure
 
       - name: 裁剪配置
         run: |
