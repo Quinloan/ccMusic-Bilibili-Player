@@ -43,6 +43,8 @@ jobs:
           exe = str((root / 'ffmpeg.exe').resolve())
           manifest = json.loads((root / 'download-manifest.json').read_text())
           assert hashlib.sha256(pathlib.Path(exe).read_bytes()).hexdigest() == manifest['exe_sha256']
+          version = subprocess.check_output([exe, '-version'], text=True)
+          assert manifest['revision'] in version
           license_text = subprocess.check_output([exe, '-L'], text=True)
           assert 'version 2.1' in license_text
           assert 'GNU General Public License' not in license_text

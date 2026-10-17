@@ -11,6 +11,9 @@ curl --fail --location --retry 3 "https://codeload.github.com/FFmpeg/FFmpeg/tar.
 printf '%s  %s\n' "$source_sha" "$out/FFmpeg-source.tar.gz" | sha256sum --check
 tar xf "$out/FFmpeg-source.tar.gz" -C "$build/src" --strip-components=1
 cd "$build/src"
+# Source archive is inside the app checkout; do not let FFmpeg inherit the app's
+# parent Git revision as its own version string.
+printf 'git-%s-ccmusic-audio\n' "$revision" > FF_VERSION
 ./configure \
   --prefix="$build/install" --target-os=mingw32 --arch=x86_64 \
   --cross-prefix=x86_64-w64-mingw32- --cc=x86_64-w64-mingw32-gcc-posix \
@@ -36,7 +39,10 @@ x86_64-w64-mingw32-strip ffmpeg.exe
 cp ffmpeg.exe "$out/ffmpeg.exe"
 cp COPYING.LGPLv2.1 "$out/LICENSE-FFmpeg.txt"
 cp COPYING.LGPLv2.1 "$out/LICENSE-LGPL-2.1.txt"
-cp config.h config_components.h ffbuild/config.mak ffbuild/config.log "$out/"
+cp config.h config_components.h ffbuild/config.mak ffbuild/config.log FF_VERSION "$out/"
+for notice in /usr/share/doc/mingw-w64-common/copyright /usr/share/doc/gcc-mingw-w64-x86-64-posix/copyright /usr/share/doc/gcc-mingw-w64-base/copyright; do
+  if test -f "$notice"; then cp -L "$notice" "$out/LICENSE-TOOLCHAIN-$(basename "$(dirname "$notice")").txt"; fi
+done
 cp "$workspace/scripts/build-ffmpeg-audio.sh" "$out/"
 x86_64-w64-mingw32-gcc-posix --version > "$out/compiler-version.txt"
 dpkg-query -W 'gcc-mingw-w64*' 'mingw-w64*' 'nasm' > "$out/toolchain-packages.txt"
@@ -52,6 +58,8 @@ encoders = re.findall(r'^#define CONFIG_(\w+)_ENCODER 1$', components, re.M)
 assert set(encoders) == {'FLAC', 'PCM_S16LE'}, encoders
 manifest = {
     'source': 'https://github.com/FFmpeg/FFmpeg', 'revision': os.environ['REVISION'],
+    'source_url': 'https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/' + os.environ['REVISION'],
+    'recipe_url': os.environ.get('GITHUB_SERVER_URL', '') + '/' + os.environ.get('GITHUB_REPOSITORY', '') + '/blob/' + os.environ.get('GITHUB_SHA', '') + '/scripts/build-ffmpeg-audio.sh',
     'source_archive_sha256': os.environ['SOURCE_SHA'], 'license': 'LGPL-2.1-or-later',
     'description': 'Custom static Windows x64 audio-only build. File/pipe input; no network/video libraries; PCM and FLAC encoders only.',
     'run_url': os.environ.get('GITHUB_SERVER_URL', '') + '/' + os.environ.get('GITHUB_REPOSITORY', '') + '/actions/runs/' + os.environ.get('GITHUB_RUN_ID', ''),
