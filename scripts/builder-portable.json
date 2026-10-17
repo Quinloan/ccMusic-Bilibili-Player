@@ -10,18 +10,34 @@
     "preload.cjs",
     "renderer/**",
     "package.json",
-    "assets/icon.png"
+    "assets/icon.png",
+    "audio-analysis.cjs",
+    "shazam-provider.cjs",
+    "lyric-recognition.cjs",
+    "analysis-cache.cjs",
+    "cover-art.cjs",
+    "netease-lyrics.cjs",
+    "video-search.cjs",
+    "cancellation.cjs",
+    "audio-downloads.cjs",
+    "download-ipc.cjs",
+    "LICENSE",
+    "THIRD-PARTY-NOTICES.md"
   ],
   "win": {
     "icon": "assets/icon.ico",
     "target": [
       {
         "target": "portable",
-        "arch": ["x64"]
+        "arch": [
+          "x64"
+        ]
       },
       {
         "target": "zip",
-        "arch": ["x64"]
+        "arch": [
+          "x64"
+        ]
       }
     ]
   },
@@ -32,5 +48,24 @@
   "nsis": {
     "oneClick": true,
     "shortcutName": "ccMusic"
-  }
+  },
+  "extraResources": [
+    {
+      "from": "resources/download-audio",
+      "to": "download-audio",
+      "filter": ["ffmpeg.exe", "LICENSE*", "download-manifest.json", "README.md", "build-ffmpeg-audio.sh", "FF_VERSION", "compiler-version.txt", "toolchain-packages.txt", "windows-imports.txt", "config.h", "config_components.h", "config.mak"]
+    },
+    {
+      "from": "resources/ffmpeg-mini.exe",
+      "to": "ffmpeg-mini.exe"
+    },
+    {
+      "from": "resources/ffmpeg-mini-licenses",
+      "to": "ffmpeg-mini-licenses"
+    },
+    {
+      "from": "resources/afp",
+      "to": "afp"
+    }
+  ]
 }

@@ -1,6 +1,6 @@
 {
   "name": "ccmusic",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "ccMusic — B 站纯音频连播桌面端：只取音频轨流式播放，自定义收藏夹自动连播",
   "main": "main.js",
   "scripts": {
@@ -16,27 +16,42 @@
   },
   "dependencies": {
     "electron-updater": "^6.8.9",
+    "opencc-js": "1.4.2",
     "qrcode": "^1.5.4",
+    "shazamio-api": "1.0.0",
     "undici": "^8.11.2"
   },
   "build": {
     "appId": "com.ccmusic.app",
     "productName": "ccMusic",
     "directories": {
-      "output": "release-v1.5.0"
+      "output": "release-v1.6.0"
     },
     "artifactName": "${productName}-Setup-${version}.${ext}",
     "publish": {
       "provider": "github",
       "owner": "Quinloan",
-      "repo": "ccMusic-Bilibili-Player"
+      "repo": "ccMusic-Bilibili-Player",
+      "channel": "latest"
     },
     "files": [
       "main.js",
       "preload.cjs",
       "renderer/**",
       "package.json",
-      "assets/icon.png"
+      "assets/icon.png",
+      "audio-analysis.cjs",
+      "shazam-provider.cjs",
+      "lyric-recognition.cjs",
+      "analysis-cache.cjs",
+      "cover-art.cjs",
+      "netease-lyrics.cjs",
+      "video-search.cjs",
+      "cancellation.cjs",
+      "audio-downloads.cjs",
+      "download-ipc.cjs",
+      "LICENSE",
+      "THIRD-PARTY-NOTICES.md"
     ],
     "win": {
       "icon": "assets/icon.ico",
@@ -56,8 +71,17 @@
     },
     "extraResources": [
       {
+        "from": "resources/download-audio",
+        "to": "download-audio",
+        "filter": ["ffmpeg.exe", "LICENSE*", "download-manifest.json", "README.md", "build-ffmpeg-audio.sh", "FF_VERSION", "compiler-version.txt", "toolchain-packages.txt", "windows-imports.txt", "config.h", "config_components.h", "config.mak"]
+      },
+      {
         "from": "resources/ffmpeg-mini.exe",
         "to": "ffmpeg-mini.exe"
+      },
+      {
+        "from": "resources/ffmpeg-mini-licenses",
+        "to": "ffmpeg-mini-licenses"
       },
       {
         "from": "resources/afp",

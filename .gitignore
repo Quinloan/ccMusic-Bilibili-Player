@@ -2,4 +2,8 @@ node_modules/
 release*/
 shots/
 *.log
-build-*.txt
+validation/
+handoff/
+build-tools/
+resources/whisper/
+resources/download-audio/*.exe

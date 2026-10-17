@@ -12,7 +12,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 
 // GitHub 仓库（用于「关于」页与检查更新）
-const GITHUB_REPO = process.env.CCMUSIC_REPO || 'Quinloan/ccMusic';
+const GITHUB_REPO = process.env.CCMUSIC_REPO || 'Quinloan/ccMusic-Bilibili-Player';
 
 const API = 'https://api.bilibili.com';
 const PASSPORT = 'https://passport.bilibili.com';
@@ -68,10 +68,10 @@ function apiHeaders(extra = {}) {
   };
 }
 
-async function apiGet(base, p, params = {}) {
+async function apiGet(base, p, params = {}, signal) {
   const u = new URL(base + p);
   for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
-  const r = await ufetch(u, { headers: apiHeaders(), dispatcher: agent });
+  const r = await ufetch(u, { headers: apiHeaders(), dispatcher: agent, signal });
   return r.json().catch(() => null);
 }
 
@@ -166,10 +166,10 @@ ipcMain.handle('store:set', (_e, library) => {
   return true;
 });
 
-ipcMain.handle('login:state', async () => {
+async function getLoginState() {
   await ensureSession();
   if (!cookies.SESSDATA) return { logged: false };
-  const nav = await apiGet(API, '/x/web-interface/nav');
+  const nav = await apiGet(API, '/x/web-interface/nav', {}, AbortSignal.timeout(15000));
   if (nav && nav.code === 0 && nav.data && nav.data.isLogin) {
     return {
       logged: true,
@@ -186,40 +186,27 @@ ipcMain.handle('login:state', async () => {
   }
   // 接口失败（网络/风控）：保留凭据，只是暂时查不到状态
   return { logged: false, stale: true, saved: !!cookies.SESSDATA }; // saved=本地有登录凭据，网络失败时用于中性提示
-});
+}
+ipcMain.handle('login:state', getLoginState);
 
 ipcMain.handle('login:logout', async () => {
   await ensureSession();
   for (const k of Object.keys(cookies)) {
     if (k !== 'buvid3' && k !== 'buvid4') delete cookies[k];
   }
+  streamCache.clear();
   persistCookies();
   return true;
 });
 
+const searchVideos = require('./video-search.cjs').createVideoSearch(async (keyword, page) => {
+  const params = signWbi({ search_type: 'video', keyword, page, order: 'totalrank' });
+  return apiGet(API, '/x/web-interface/wbi/search/type', params, AbortSignal.timeout(15000));
+});
 ipcMain.handle('bili:search', async (_e, keyword, page = 1) => {
   await ensureSession();
   await ensureWbi();
-  const params = signWbi({ search_type: 'video', keyword, page, order: 'totalrank' });
-  const j = await apiGet(API, '/x/web-interface/wbi/search/type', params);
-  if (!j || j.code !== 0) throw new Error((j && j.message) || `搜索失败(${j && j.code})`);
-  const strip = (s) =>
-    String(s == null ? '' : s)
-      .replace(/<[^>]+>/g, '')
-      .replace(/&quot;/g, '"')
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>');
-  const list = ((j.data && j.data.result) || []).map((it) => ({
-    bvid: it.bvid,
-    title: strip(it.title),
-    author: strip(it.author),
-    pic: it.pic && it.pic.indexOf('//') === 0 ? 'https:' + it.pic : it.pic,
-    duration: it.duration,
-    play: it.play,
-    danmaku: it.video_review,
-  }));
-  return { list, hasMore: ((j.data && j.data.numPages) || 1) > page };
+  return searchVideos(keyword, page);
 });
 
 ipcMain.handle('bili:video', async (_e, id) => {
@@ -301,8 +288,9 @@ ipcMain.handle('app:copyText', (_e, text) => {
 });
 
 const streamCache = new Map();
-async function getPlayurl(bvid, cid) {
+async function getPlayurl(bvid, cid, refresh = false) {
   const key = `${bvid}:${cid}`;
+  if (refresh) streamCache.delete(key);
   const hit = streamCache.get(key);
   if (hit && hit.expireAt > Date.now()) return hit.payload;
 
@@ -311,42 +299,48 @@ async function getPlayurl(bvid, cid) {
   const j = await apiGet(
     API,
     '/x/player/wbi/playurl',
-    signWbi({ bvid, cid, qn: 64, fnval: 16, fnver: 0, fourk: 0 })
+    signWbi({ bvid, cid, qn: 127, fnval: 4048, fnver: 0, fourk: 1 }),
+    AbortSignal.timeout(15000)
   );
   if (!j || j.code !== 0) throw new Error((j && j.message) || '播放地址获取失败');
-  const audio = (j.data && j.data.dash && j.data.dash.audio) || [];
-  if (!audio.length) throw new Error('该视频没有独立音轨');
-
-  const norm = (a) => ({
-    id: a.id,
-    codecs: a.codecs,
-    kbps: Math.round((a.bandwidth || 0) / 1000),
-    url: a.baseUrl,
-  });
+  const audioInfo = require('./audio-downloads.cjs').normalizePlayInfo(j.data);
+  if (!audioInfo.tracks.length && !audioInfo.flac && !audioInfo.dolby) throw new Error('该视频没有独立音轨');
   const payload = {
-    // raw 保留 B 站原始顺序，渲染端据此判断「默认那一档」
-    raw: audio.map((a) => ({ id: a.id, kbps: Math.round((a.bandwidth || 0) / 1000) })),
-    tracks: audio.map(norm).sort((a, b) => b.kbps - a.kbps),
-    flac: j.data.flac && j.data.flac.audio ? norm(j.data.flac.audio) : null,
-    dolby: j.data.dolby && j.data.dolby.audio ? norm(j.data.dolby.audio) : null,
+    ...audioInfo,
     expireAt: Date.now() + 100 * 60 * 1000,
   };
   streamCache.set(key, { payload, expireAt: payload.expireAt });
   return payload;
 }
 
-ipcMain.handle('bili:playurl', (_e, bvid, cid) => getPlayurl(bvid, cid));
+ipcMain.handle('bili:playurl', (_e, bvid, cid, refresh) => getPlayurl(bvid, cid, !!refresh));
+
+require('./download-ipc.cjs').registerDownloads({
+  app, ipcMain, dialog, BrowserWindow, shell, getLoginState, getPlayurl,
+  executable: path.join(app.isPackaged ? process.resourcesPath : path.join(__dirname, 'resources'), 'download-audio', 'ffmpeg.exe'),
+  resolveItem: async item => {
+    await ensureSession();
+    if (item.cid) return item;
+    const j = await apiGet(API, '/x/web-interface/view', { bvid: item.bvid }, AbortSignal.timeout(15000));
+    if (j?.code !== 0) throw new Error(j?.message || '视频信息获取失败');
+    const part = j.data?.pages?.find(p => p.page === item.page);
+    if (!part?.cid) throw new Error('找不到对应分 P');
+    return { ...item, cid: part.cid };
+  },
+  request: (url, options) => ufetch(url, { ...options, dispatcher: agent }),
+  headers: () => ({ 'User-Agent': UA, Referer: REFERER }),
+});
 
 // ---------------------------------------------------------------- 智能分歌
 // 长视频（几小时、无分 P）按歌与歌之间的静音切成一首首曲目
 const SPLIT_RATE = 8000;  // 8kHz 单声道足够判断静音，数据量小
-const SPLIT_TH = 0.008;   // RMS 低于此值算静音（相对满量程）
-const SPLIT_MIN_SIL = 1.5;  // 静音至少持续这么久才算切点
-const SPLIT_MIN_TRACK = 60; // 单曲最短 60 秒，滤掉过短的碎片
-
-// 周期性留 PCM 采样：识别歌名时用，避免为识别再下一次音频
-const SAMPLE_EVERY = 30; // 每 30 秒留一段
-const SAMPLE_SEC = 8;    // 每段 8 秒（够生成指纹）
+const { waitFor } = require('./cancellation.cjs');
+const { splitRms, PcmSampler, selectSamples, timestampTracks, consistentMatch, mergeRecognizedFragments, specificSongMatch } = require('./audio-analysis.cjs');
+let identifyNextAt = 0;
+const IDENTIFY_INTERVAL_MS = 1000;
+let shazamBlockedUntil = 0;
+let identifyQueue = Promise.resolve();
+const identifyCache = new Map();
 
 let afpMod = null;
 function loadAfp() {
@@ -359,11 +353,42 @@ function loadAfp() {
 }
 
 // 音频片段 → 指纹 → 网易云匹配（只上传指纹，不上传音频）
-async function identifySong(pcm) {
+function identifySong(pcm, signal) {
+  signal?.throwIfAborted();
+  const key = createHash('sha256').update(pcm).digest('hex');
+  if (identifyCache.has(key)) return Promise.resolve(identifyCache.get(key));
+  const task = identifyQueue.then(async () => {
+    await require('node:timers/promises').setTimeout(Math.max(0, identifyNextAt - Date.now()), undefined, { signal });
+    signal?.throwIfAborted();
+    // Request time already counts toward the interval. Keep requests serial,
+    // but avoid adding a full extra delay after every completed response.
+    identifyNextAt = Date.now() + IDENTIFY_INTERVAL_MS;
+    let hit = await identifyNetease(pcm, signal);
+    signal?.throwIfAborted();
+    if (!specificSongMatch(hit)) hit = null;
+    if (!hit && Date.now() >= shazamBlockedUntil) {
+      await require('node:timers/promises').setTimeout(500, undefined, { signal });
+      try { hit = await require('./shazam-provider.cjs').identifyShazam(pcm, SPLIT_RATE, signal); }
+      catch (error) {
+        if (error.status === 429) shazamBlockedUntil = Date.now() + 60000;
+        console.log('[identify:shazam]', error.name, error.message);
+      }
+      signal?.throwIfAborted();
+    }
+    if (hit) {
+      identifyCache.set(key, hit);
+      if (identifyCache.size > 500) identifyCache.delete(identifyCache.keys().next().value);
+    }
+    return hit;
+  });
+  identifyQueue = task.catch(() => null);
+  return waitFor(task, signal);
+}
+async function identifyNetease(pcm, signal) {
   try {
     const { GenerateFP } = loadAfp();
     const n = Math.floor(pcm.length / 2);
-    if (n < 8000) return null;
+    if (n < SPLIT_RATE * 5) return null;
     const f32 = new Float32Array(n);
     for (let i = 0; i < n; i++) f32[i] = pcm.readInt16LE(i * 2) / 32768;
     let e = 0; const m = Math.min(n, 8000);
@@ -375,15 +400,21 @@ async function identifySong(pcm) {
       + `&duration=${Math.round(n / SPLIT_RATE)}&rawdata=${encodeURIComponent(fp)}&times=1&decrypt=1`;
     const r = await ufetch(url, {
       headers: { 'User-Agent': UA, Referer: 'https://music.163.com/' }, dispatcher: agent,
-      signal: AbortSignal.timeout(10000), // 识别请求 10 秒超时，卡住就放弃这一首
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(10000)]) : AbortSignal.timeout(10000),
     });
-    const j = await r.json().catch(() => null);
+    if (r.status === 429) identifyNextAt = Math.max(identifyNextAt, Date.now() + 15000);
+    if (!r.ok) throw new Error('网易云 HTTP ' + r.status);
+    const j = await r.json();
+    if (j.code === 429) identifyNextAt = Math.max(identifyNextAt, Date.now() + 15000);
+    if (j.code && j.code !== 200) throw new Error('网易云接口错误 ' + j.code);
     const list = (j && j.data && j.data.result) || [];
     if (!list.length) { console.log('[identify] 无匹配结果'); return null; }
     const s = list[0].song || {};
     if (!s.name) { console.log('[identify] 返回无歌名'); return null; }
-    return { name: s.name, artist: (s.artists || []).map((a) => a.name).join('/') };
+    return { name: s.name, artist: (s.artists || s.ar || []).map((a) => a.name).join('/'), source: 'netease',
+      neteaseId: String(s.id || ''), cover: s.album?.picUrl || s.al?.picUrl || '' };
   } catch (e) {
+    signal?.throwIfAborted();
     console.log('[identify] 异常:', e.message);
     return null;
   }
@@ -397,127 +428,288 @@ function ffmpegPath() {
 }
 
 // maxSec 可选：只分析前 N 秒（调试 / 试看用，不传则分析整段）
-ipcMain.handle('split:analyze', async (e, bvid, cid, maxSec) => {
-  const send = (p) => { try { e.sender.send('split:progress', p); } catch (_) {} };
+const splitJobs = new Map();
+let artworkResolver;
+async function getArtworkResolver() {
+  await netInit();
+  if (!artworkResolver) artworkResolver = require('./cover-art.cjs').createArtworkResolver({
+    request: ufetch, dispatcher: agent, cacheFile: path.join(app.getPath('userData'), 'song-artwork-cache.json'),
+  });
+  return artworkResolver;
+}
+ipcMain.handle('artwork:resolve', async (_e, match) => (await getArtworkResolver()).resolve(match));
+ipcMain.handle('song:resolve-title', async (_e, input) => (await getArtworkResolver()).resolveTitle(input));
+// Short-lived, renderer-owned PCM samples let confirmation reuse the first decode.
+// Evicted/expired sessions can be decoded again without changing confirmed cuts.
+const splitSessions = new Map();
+function disposeSplitSession(id) {
+  const session = splitSessions.get(id);
+  if (!session) return;
+  splitSessions.delete(id);
+  require('node:timers').clearTimeout(session.timer);
+  session.owner.off?.('destroyed', session.onGone);
+  if (session.audioFile) { try { fs.unlinkSync(session.audioFile); } catch (_) {} }
+  if (session.workDir) { try { fs.rmdirSync(session.workDir); } catch (_) {} }
+}
+function holdSplitSession(owner, data) {
+  const bytes = data.samples.reduce((sum, sample) => sum + sample.pcm.length, 0);
+  if (bytes > 128 * 1024 * 1024) return null;
+  while (splitSessions.size && (splitSessions.size >= 2 || [...splitSessions.values()].reduce((sum, s) => sum + s.bytes, bytes) > 128 * 1024 * 1024)) disposeSplitSession(splitSessions.keys().next().value);
+  const id = require('node:crypto').randomUUID();
+  const onGone = () => disposeSplitSession(id);
+  const timer = setTimeout(onGone, 15 * 60 * 1000); timer.unref?.();
+  splitSessions.set(id, { ...data, owner, bytes, onGone, timer });
+  owner.once?.('destroyed', onGone);
+  return id;
+}
+ipcMain.handle('split:release', (e, id) => {
+  if (splitSessions.get(id)?.owner.id !== e.sender.id) return false;
+  disposeSplitSession(id); return true;
+});
+async function recognizeSplitTracks(data, confirmed, signal, send) {
+  const { samples, secs, audioFile, withLyrics, resourceRoot } = data;
+  const tracks = require('./renderer/library-model.js').validateTracks(confirmed, secs);
+  const cache = require('./analysis-cache.cjs');
+  const cacheFile = path.join(app.getPath('userData'), 'split-analysis-cache.json');
+  const warnings = []; let lyricsBlocked = false;
+  for (let i = 0; i < tracks.length; i++) {
+    signal.throwIfAborted();
+    const t = tracks[i];
+    if (!t.title && !t.checked) {
+      const key = createHash('sha256').update(`progressive:${data.bvid}:${data.cid}:${withLyrics}:${t.start}:${t.end}`).digest('hex');
+      const cached = cache.getAnalysis(cacheFile, key)?.tracks?.[0];
+      const candidates = []; let hit = cached?.title ? { name: cached.title, artist: cached.artist, source: cached.source, referenceArtist: cached.referenceArtist,
+        neteaseId: cached.neteaseId, cover: cached.songCover } : null;
+      for (const sample of hit ? [] : selectSamples(samples, t)) {
+        candidates.push(await identifySong(sample.pcm, signal));
+        hit = consistentMatch(candidates); if (hit) break;
+      }
+      if (!hit && withLyrics && audioFile && !lyricsBlocked) {
+        send({ stage: 'lyrics', done: i, total: tracks.length });
+        try {
+          hit = await require('./lyric-recognition.cjs').identifyLyricsForTrack({ ffmpeg: ffmpegPath(), source: audioFile, track: t, resourceRoot, request: ufetch, dispatcher: agent, signal });
+        } catch (error) {
+          signal.throwIfAborted();
+          if ([405, 429].includes(error.serviceCode)) lyricsBlocked = true;
+          if (!warnings.length) warnings.push('部分歌词识别暂时不可用');
+        }
+      }
+      signal.throwIfAborted();
+      if (hit) {
+        Object.assign(t, { title: hit.name, artist: hit.artist || '', source: hit.source, referenceArtist: hit.referenceArtist || '',
+          neteaseId: hit.neteaseId || (hit.source === 'lyrics' ? String(hit.songId || '') : ''),
+          songCover: require('./renderer/library-model.js').songCoverUrl(hit.cover) });
+        if (!cached) { try { cache.saveAnalysis(cacheFile, key, { tracks: [t] }); } catch (error) { console.log('[split:cache]', error.message); } }
+      }
+    }
+    // Send the metadata before starting the next song. Never merge confirmed cuts.
+    t.checked = true;
+    send({ stage: 'identify', index: i, track: t, done: i + 1, total: tracks.length });
+  }
+  return { tracks, duration: secs, named: tracks.filter(t => t.title).length, warnings };
+}
+let splitTurn = Promise.resolve();
+let recognitionTurn = Promise.resolve();
+ipcMain.handle('split:cancel', (e, requestId) => {
+  const job = splitJobs.get(`${e.sender.id}:${requestId}`);
+  if (!job) return false;
+  job.abort();
+  return true;
+});
+ipcMain.handle('split:analyze', async (e, bvid, cid, maxSec, description = '', requestId = '', options = {}) => {
+  const mode = options?.mode;
+  if (mode && !['split', 'recognize'].includes(mode)) throw new Error('无效的分歌任务');
+  const controller = new AbortController();
+  const signal = controller.signal;
+  const jobKey = `${e.sender.id}:${requestId}`;
+  if (requestId && splitJobs.has(jobKey)) throw new Error('任务已在运行');
+  if (requestId) splitJobs.set(jobKey, controller);
+  const ownerGone = () => controller.abort();
+  e.sender.once?.('destroyed', ownerGone);
+  const send = (p) => { try { e.sender.send('split:progress', { ...p, requestId }); } catch (_) {} };
+  let releaseTurn, releaseRecognition;
+  try {
+  if (mode === 'recognize') {
+    const previous = recognitionTurn;
+    const finished = new Promise(resolve => { releaseRecognition = resolve; });
+    recognitionTurn = previous.then(() => finished);
+    send({ stage: 'queued' });
+    await waitFor(previous, signal);
+    signal.throwIfAborted();
+    const session = splitSessions.get(options.sessionId);
+    if (session && session.owner.id === e.sender.id && session.bvid === bvid && session.cid === cid) {
+      splitSessions.delete(options.sessionId);
+      require('node:timers').clearTimeout(session.timer);
+      session.owner.off?.('destroyed', session.onGone);
+      try { return await recognizeSplitTracks(session, options.tracks, signal, send); }
+      finally {
+        if (session.audioFile) { try { fs.unlinkSync(session.audioFile); } catch (_) {} }
+        if (session.workDir) { try { fs.rmdirSync(session.workDir); } catch (_) {} }
+      }
+    }
+    // Validate before downloading, then validate again against decoded duration.
+    require('./renderer/library-model.js').validateTracks(options.tracks, options.tracks?.at(-1)?.end);
+  }
   const ffBin = ffmpegPath();
   if (!fs.existsSync(ffBin)) throw new Error('缺少解码组件 ffmpeg-mini.exe');
 
-  const p = await getPlayurl(bvid, cid);
+  const lyricTools = require('./lyric-recognition.cjs');
+  const resourceRoot = app.isPackaged ? process.resourcesPath : path.join(__dirname, 'resources');
+  const withLyrics = lyricTools.lyricsAvailable(resourceRoot);
+  const cache = require('./analysis-cache.cjs');
+  const cacheFile = !mode && !(maxSec > 0) ? path.join(app.getPath('userData'), 'split-analysis-cache.json') : null;
+  const cacheKey = createHash('sha256').update(`${bvid}:${cid}:${withLyrics}:${description}`).digest('hex');
+  if (cacheFile) {
+    const cached = cache.getAnalysis(cacheFile, cacheKey);
+    if (cached) { send({ stage: 'cached', pct: 100 }); return cached; }
+  }
+  const previous = splitTurn;
+  const finished = new Promise(resolve => { releaseTurn = resolve; });
+  splitTurn = previous.then(() => finished);
+  send({ stage: 'queued' });
+  await waitFor(previous, signal);
+  signal.throwIfAborted();
+  const p = await waitFor(getPlayurl(bvid, cid), signal);
+  signal.throwIfAborted();
   const track = (p.tracks && p.tracks[0]) || p.flac || p.dolby;
   if (!track || !track.url) throw new Error('没有可用音轨');
 
-  send({ stage: 'download', pct: 0 });
-  const res = await ufetch(track.url, { headers: apiHeaders(), dispatcher: agent });
-  const total = +(res.headers.get('content-length') || 0);
+  // Compressed audio is temporary: a second decode preserves full vocal detail for ASR.
+  const workDir = withLyrics ? fs.mkdtempSync(path.join(os.tmpdir(), 'ccmusic-analysis-')) : null;
+  const audioFile = workDir ? path.join(workDir, 'audio.m4s') : null;
+  let audioFd = null;
+  let retained = false;
+  const downloadAbort = new AbortController();
+  try {
+    if (audioFile) audioFd = fs.openSync(audioFile, 'w');
+    send({ stage: 'download', pct: 0 });
+    const res = await ufetch(track.url, { headers: apiHeaders(), dispatcher: agent, signal: AbortSignal.any([signal, downloadAbort.signal, AbortSignal.timeout(300000)]) });
+    if (!res.ok || !res.body) throw new Error('音频下载失败 HTTP ' + res.status);
+    const total = +(res.headers.get('content-length') || 0);
 
-  const ffArgs = ['-i', 'pipe:0', '-f', 's16le', '-ac', '1', '-ar', String(SPLIT_RATE)];
-  if (maxSec > 0) ffArgs.push('-t', String(maxSec)); // 只解前 N 秒，下载随之停止
-  ffArgs.push('pipe:1');
-  const ff = spawn(ffBin, ffArgs);
-  let bytes = 0, pcmBytes = 0;
-  let winAcc = 0, winN = 0;
-  const WIN = SPLIT_RATE / 10; // 每 100ms 一个窗口
-  const rms = [];
-  let ffError = '';
+    const ffArgs = ['-i', 'pipe:0', '-f', 's16le', '-ac', '1', '-ar', String(SPLIT_RATE)];
+    if (maxSec > 0) ffArgs.push('-t', String(maxSec)); // 只解前 N 秒，下载随之停止
+    ffArgs.push('pipe:1');
+    const ff = spawn(ffBin, ffArgs, { windowsHide: true, signal });
+    let bytes = 0, pcmBytes = 0;
+    let winAcc = 0, winN = 0;
+    const WIN = SPLIT_RATE / 10; // 每 100ms 一个窗口
+    const rms = [];
+    let ffError = '';
 
-  // 滚动保留最近 8 秒 PCM，每 30 秒存一份，供识别歌名用
-  const samples = [];
-  let roll = [], rollBytes = 0, nextSampleAt = SAMPLE_EVERY;
-  const ROLL_MAX = SPLIT_RATE * 2 * SAMPLE_SEC;
-  let carry = Buffer.alloc(0); // 网络分包可能奇数字节，必须跨块对齐到 16 位样本
+    const sampler = new PcmSampler(SPLIT_RATE);
+    let carry = Buffer.alloc(0); // 网络分包可能奇数字节，必须跨块对齐到 16 位样本
 
-  ff.stdout.on('data', (buf) => {
-    const merged = carry.length ? Buffer.concat([carry, buf]) : buf;
-    const usable = merged.length - (merged.length % 2);
-    carry = merged.slice(usable);
-    const aligned = merged.slice(0, usable);
-    pcmBytes += aligned.length;
-    for (let i = 0; i + 1 < aligned.length; i += 2) {
-      const s = aligned.readInt16LE(i) / 32768;
-      winAcc += s * s; winN++;
-      if (winN >= WIN) { rms.push(Math.sqrt(winAcc / winN)); winAcc = 0; winN = 0; }
-    }
-    roll.push(aligned); rollBytes += aligned.length;
-    while (rollBytes > ROLL_MAX && roll.length) { rollBytes -= roll.shift().length; }
-    const t = pcmBytes / 2 / SPLIT_RATE;
-    if (t >= nextSampleAt) {
-      samples.push({ at: t, pcm: Buffer.concat(roll) });
-      nextSampleAt += SAMPLE_EVERY;
-    }
-  });
-  ff.stderr.on('data', (d) => { const s = d.toString(); if (s.trim()) ffError = s.slice(-300); });
-  // ffmpeg 提前退出（坏流/参数问题）时 stdin 会 EPIPE，必须接住否则主进程弹窗崩溃
-  ff.stdin.on('error', () => {});
-  ff.stdout.on('error', () => {});
-
-  const pump = (async () => {
-    let lastPct = -1;
-    for await (const chunk of res.body) {
-      if (!ff.stdin.writable) break;
-      bytes += chunk.length;
-      if (total) {
-        const pct = Math.min(99, Math.round((bytes / total) * 100));
-        if (pct !== lastPct && pct % 5 === 0) { lastPct = pct; send({ stage: 'download', pct }); }
+    ff.stdout.on('data', (buf) => {
+      const merged = carry.length ? Buffer.concat([carry, buf]) : buf;
+      const usable = merged.length - (merged.length % 2);
+      carry = merged.slice(usable);
+      const aligned = merged.slice(0, usable);
+      pcmBytes += aligned.length;
+      for (let i = 0; i + 1 < aligned.length; i += 2) {
+        const s = aligned.readInt16LE(i) / 32768;
+        winAcc += s * s; winN++;
+        if (winN >= WIN) { rms.push(Math.sqrt(winAcc / winN)); winAcc = 0; winN = 0; }
       }
-      if (!ff.stdin.write(chunk)) await new Promise((r) => ff.stdin.once('drain', r));
-    }
-    ff.stdin.end();
-  })();
+      sampler.push(aligned);
+    });
+    ff.stderr.on('data', (d) => { const s = d.toString(); if (s.trim()) ffError = s.slice(-300); });
+    // ffmpeg 提前退出（坏流/参数问题）时 stdin 会 EPIPE，必须接住否则主进程弹窗崩溃
+    ff.stdin.on('error', () => {});
+    ff.stdout.on('error', () => {});
 
-  const closed = new Promise((r) => ff.on('close', r));
-  let downloadOk = true;
-  await Promise.all([pump.catch((err) => { downloadOk = false; console.log('[split] 下载中断:', err.message); }), closed]);
-  console.log('[split] 下载统计: content-length=' + total + ' 实际=' + bytes + ' PCM时长=' + (pcmBytes / 2 / SPLIT_RATE).toFixed(1) + 's ffExit=' + ff.exitCode);
-
-  const secs = pcmBytes / 2 / SPLIT_RATE;
-  if (!downloadOk) throw new Error('音频下载中断（网络波动），请重试');
-  if (secs < 10) throw new Error('音频太短，未分析出内容');
-
-  send({ stage: 'analyze', pct: 100 });
-  // 找静音段
-  const silences = [];
-  let runStart = -1;
-  for (let i = 0; i < rms.length; i++) {
-    const t = i / 10;
-    if (rms[i] < SPLIT_TH) { if (runStart < 0) runStart = t; }
-    else if (runStart >= 0) {
-      if (t - runStart >= SPLIT_MIN_SIL) silences.push({ from: runStart, to: t });
-      runStart = -1;
-    }
-  }
-  // 按静音中点切，太短的碎片丢弃
-  const tracks = [];
-  let start = 0;
-  silences.forEach((s) => {
-    const cut = (s.from + s.to) / 2;
-    if (cut - start >= SPLIT_MIN_TRACK) { tracks.push({ start: +start.toFixed(1), end: +cut.toFixed(1) }); start = cut; }
-  });
-  if (secs - start >= SPLIT_MIN_TRACK) tracks.push({ start: +start.toFixed(1), end: +secs.toFixed(1) });
-
-  // 逐首识别歌名：避开接缝，在曲目内取多个位置尝试（长曲取 1/4、1/2、3/4 三处）
-  let named = 0;
-  for (let i = 0; i < tracks.length; i++) {
-    const t = tracks[i];
-    const span = t.end - t.start;
-    const mids = span > 240
-      ? [0.3, 0.5, 0.7].map((r) => t.start + span * r)
-      : [(t.start + t.end) / 2];
-    let hit = null;
-    for (const mid of mids) {
-      if (hit) break;
-      let best = null;
-      for (const s of samples) {
-        if (s.at < t.start + 8 || s.at > t.end - 8) continue; // 距接缝至少 8 秒
-        if (!best || Math.abs(s.at - mid) < Math.abs(best.at - mid)) best = s;
+    const pump = (async () => {
+      let lastPct = -1;
+      for await (const chunk of res.body) {
+        if (!ff.stdin.writable) break;
+        bytes += chunk.length;
+        if (audioFd !== null) fs.writeSync(audioFd, chunk);
+        if (total) {
+          const pct = Math.min(99, Math.round((bytes / total) * 100));
+          if (pct !== lastPct && pct % 5 === 0) { lastPct = pct; send({ stage: 'download', pct }); }
+        }
+        if (!ff.stdin.write(chunk)) await new Promise((resolve, reject) => {
+          const cleanup = () => { ff.stdin.off('drain', drained); ff.stdin.off('close', stopped); ff.stdin.off('error', failed); };
+          const drained = () => { cleanup(); resolve(); };
+          const stopped = () => { cleanup(); resolve(); };
+          const failed = err => { cleanup(); if (maxSec > 0 && err.code === 'EPIPE') resolve(); else reject(err); };
+          ff.stdin.once('drain', drained); ff.stdin.once('close', stopped); ff.stdin.once('error', failed);
+        });
       }
-      if (best) hit = await identifySong(best.pcm);
-    }
-    send({ stage: 'identify', pct: Math.round((i / tracks.length) * 100), done: i, total: tracks.length });
-    if (hit) { t.title = hit.name; t.artist = hit.artist || ''; named++; }
-    await new Promise((r2) => setTimeout(r2, 350)); // 请求间隔，防接口限频
-  }
+      ff.stdin.end();
+    })();
 
-  return { tracks, duration: +secs.toFixed(1), silences: silences.length, named };
+    const closed = new Promise((resolve, reject) => { ff.once('close', resolve); ff.once('error', error => { if (error.name !== 'AbortError') reject(error); }); });
+    let downloadOk = true;
+    await Promise.all([pump.catch((err) => { downloadOk = false; ff.stdin.destroy(); if (!(maxSec > 0 && ['EPIPE', 'EOF', 'ERR_STREAM_DESTROYED'].includes(err.code))) ff.kill(); console.log('[split] 下载中断:', err.message); }), closed]);
+    if (audioFd !== null) { fs.closeSync(audioFd); audioFd = null; }
+    console.log('[split] 下载统计: content-length=' + total + ' 实际=' + bytes + ' PCM时长=' + (pcmBytes / 2 / SPLIT_RATE).toFixed(1) + 's ffExit=' + ff.exitCode);
+
+    const secs = pcmBytes / 2 / SPLIT_RATE;
+    signal.throwIfAborted();
+    if (ff.exitCode !== 0) throw new Error('音频解码失败：' + ffError);
+    if (!downloadOk && !(maxSec > 0 && secs >= maxSec - 0.2)) throw new Error('音频下载中断（网络波动），请重试');
+    if (!(maxSec > 0) && total && bytes !== total) throw new Error('音频下载不完整，请重试');
+    if (secs < 10) throw new Error('音频太短，未分析出内容');
+
+    send({ stage: 'analyze', pct: 100 });
+    const result = splitRms(rms, secs);
+    const tracks = timestampTracks(description, secs) || result.tracks;
+    if (mode) {
+      const data = { bvid, cid, samples: sampler.samples, secs, audioFile, workDir, withLyrics, resourceRoot };
+      if (mode === 'recognize') {
+        // Release decoding capacity while the serial fingerprint queue runs.
+        releaseTurn?.(); releaseTurn = null;
+        return await recognizeSplitTracks(data, options.tracks, signal, send);
+      }
+      const sessionId = holdSplitSession(e.sender, data);
+      retained = !!sessionId;
+      return { tracks, duration: +secs.toFixed(1), silences: result.silences, named: tracks.filter(t => t.title).length, warnings: [], sessionId };
+    }
+    let named = 0, lyricsBlocked = false;
+    const warnings = [];
+    for (let i = 0; i < tracks.length; i++) {
+      signal.throwIfAborted();
+      const t = tracks[i];
+      if (t.title) { named++; continue; }
+      const candidates = [];
+      let hit = null;
+      for (const sample of selectSamples(sampler.samples, t)) {
+        candidates.push(await identifySong(sample.pcm, signal));
+        hit = consistentMatch(candidates);
+        if (hit) break;
+      }
+      if (!hit && withLyrics && !lyricsBlocked) {
+        send({ stage: 'lyrics', done: i, total: tracks.length });
+        try {
+          hit = await lyricTools.identifyLyricsForTrack({ ffmpeg: ffBin, source: audioFile, track: t,
+            resourceRoot, request: ufetch, dispatcher: agent, signal });
+        } catch (error) {
+          signal.throwIfAborted();
+          console.log('[identify:lyrics]', error.message);
+          if ([405, 429].includes(error.serviceCode)) lyricsBlocked = true;
+          if (!warnings.includes('部分歌词识别暂时不可用')) warnings.push('部分歌词识别暂时不可用');
+        }
+      }
+      send({ stage: 'identify', pct: Math.round(((i + 1) / tracks.length) * 100), done: i + 1, total: tracks.length });
+      if (hit) { t.title = hit.name; t.artist = hit.artist || ''; t.source = hit.source; t.referenceArtist = hit.referenceArtist || '';
+        t.neteaseId = hit.neteaseId || (hit.source === 'lyrics' ? String(hit.songId || '') : '');
+        t.songCover = require('./renderer/library-model.js').songCoverUrl(hit.cover); named++; }
+    }
+
+    signal.throwIfAborted();
+    const finalTracks = mergeRecognizedFragments(tracks);
+    named = finalTracks.filter(t => t.title).length;
+    const output = { tracks: finalTracks, duration: +secs.toFixed(1), silences: result.silences, named, warnings };
+    if (cacheFile && !warnings.length) { try { cache.saveAnalysis(cacheFile, cacheKey, output); } catch (error) { console.log('[split:cache]', error.message); } }
+    return output;
+  } finally {
+    downloadAbort.abort();
+    if (audioFd !== null) { try { fs.closeSync(audioFd); } catch (_) {} }
+    if (!retained && audioFile) { try { fs.unlinkSync(audioFile); } catch (_) {} }
+    if (!retained && workDir) { try { fs.rmdirSync(workDir); } catch (_) {} }
+  }
+  } finally { releaseTurn?.(); releaseRecognition?.(); if (requestId) splitJobs.delete(jobKey); e.sender.off?.('destroyed', ownerGone); }
 });
 
 ipcMain.handle('login:qrcode', async () => {
@@ -546,6 +738,7 @@ ipcMain.handle('login:poll', async (_e, key) => {
       if (m) cookies[m[1]] = m[2];
     }
     persistCookies();
+    streamCache.clear();
     await refreshWbi();
     return { status: 'done' };
   }
@@ -555,7 +748,8 @@ ipcMain.handle('login:poll', async (_e, key) => {
 });
 
 ipcMain.handle('app:openExternal', (_e, url) => shell.openExternal(url));
-ipcMain.handle('app:version', () => app.getVersion());
+const appVersion = () => app.isPackaged ? app.getVersion() : require('./package.json').version;
+ipcMain.handle('app:version', () => appVersion());
 
 // 自绘标题栏的窗口控制
 ipcMain.handle('win:minimize', (e) => {
@@ -593,7 +787,7 @@ ipcMain.handle('settings:autoLaunchState', () => app.getLoginItemSettings().open
 
 // ---------------------------------------------------------------- 诊断
 ipcMain.handle('diag:env', () => ({
-  version: app.getVersion(),
+  version: appVersion(),
   electron: process.versions.electron,
   chrome: process.versions.chrome,
   node: process.versions.node,
@@ -677,7 +871,7 @@ ipcMain.handle('diag:export', () => {
     app: 'ccMusic',
     time: new Date().toISOString(),
     env: {
-      version: app.getVersion(),
+      version: appVersion(),
       electron: process.versions.electron,
       chrome: process.versions.chrome,
       node: process.versions.node,
@@ -706,7 +900,7 @@ function cmpVer(a, b) {
 }
 
 ipcMain.handle('update:check', async () => {
-  const current = app.getVersion();
+  const current = appVersion();
   const repo = GITHUB_REPO;
   try {
     const r = await ufetch(`https://api.github.com/repos/${repo}/releases/latest`, {

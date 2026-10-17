@@ -1,0 +1,57 @@
+name: Build audio-only LGPL FFmpeg
+on:
+  push:
+    branches: [build/ffmpeg-audio-lgpl]
+    paths: [.github/workflows/ffmpeg-audio.yml, scripts/build-ffmpeg-audio.sh]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Prepare cross compiler
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64-posix nasm make pkg-config
+      - name: Build and audit components
+        run: bash scripts/build-ffmpeg-audio.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ccmusic-ffmpeg-audio-win64
+          path: ffmpeg-audio-out/
+          if-no-files-found: error
+          retention-days: 90
+  windows-smoke:
+    needs: build
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ccmusic-ffmpeg-audio-win64
+          path: artifact
+      - name: Verify native Windows execution and exact segment export
+        shell: python
+        run: |
+          import hashlib, json, math, pathlib, struct, subprocess, wave
+          root = pathlib.Path('artifact')
+          exe = str((root / 'ffmpeg.exe').resolve())
+          manifest = json.loads((root / 'download-manifest.json').read_text())
+          assert hashlib.sha256(pathlib.Path(exe).read_bytes()).hexdigest() == manifest['exe_sha256']
+          version = subprocess.check_output([exe, '-version'], text=True)
+          assert manifest['revision'] in version
+          license_text = subprocess.check_output([exe, '-L'], text=True)
+          assert 'version 2.1' in license_text
+          assert 'GNU General Public License' not in license_text
+          with wave.open('sample.wav', 'wb') as output:
+              output.setparams((2, 2, 48000, 0, 'NONE', 'not compressed'))
+              output.writeframes(b''.join(struct.pack('<hh', int(10000*math.sin(i/20)), int(10000*math.sin(i/20))) for i in range(192000)))
+          subprocess.run([exe, '-v', 'error', '-i', 'sample.wav', '-ss', '1', '-t', '1.25', '-c:a', 'flac', '-sample_fmt', 's32', 'segment.flac'], check=True)
+          pcm = subprocess.check_output([exe, '-v', 'error', '-i', 'segment.flac', '-ar', '8000', '-ac', '1', '-f', 's16le', 'pipe:1'])
+          assert len(pcm) == 20000, len(pcm)
+          print('Native Windows smoke passed:', manifest['bytes'], 'bytes')

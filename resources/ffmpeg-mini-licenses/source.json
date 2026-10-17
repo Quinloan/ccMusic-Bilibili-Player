@@ -1,0 +1,9 @@
+{
+  "version": "7.1",
+  "source": "https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/b08d7969c550a804a59511c7b83f2dd8cc0499b8",
+  "revision": "b08d7969c550a804a59511c7b83f2dd8cc0499b8",
+  "source_sha256": "02fa6d9827da3b6786e4df821218cc036db2b4481e7f48267c2dcda695633afc",
+  "binary_sha256": "dc5240589c7d72553dc47f7e0eb23717a1bff5435fc9956929da62db9dbe4368",
+  "recipe": ".github/workflows/build-mini-ffmpeg.yml",
+  "license": "LGPL-2.1-or-later"
+}

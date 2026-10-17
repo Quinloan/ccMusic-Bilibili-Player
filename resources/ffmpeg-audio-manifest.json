@@ -1,0 +1,30 @@
+{
+  "source": "https://github.com/FFmpeg/FFmpeg",
+  "revision": "5cb9fcd21167cf2f5a2852ea582997bbd0055521",
+  "source_url": "https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/5cb9fcd21167cf2f5a2852ea582997bbd0055521",
+  "recipe_url": "https://github.com/Quinloan/ccMusic-Bilibili-Player/blob/46be78b01433e95db26430f2eb44c8ae383df90a/scripts/build-ffmpeg-audio.sh",
+  "source_archive_sha256": "3f768271927cbfef65d475bd48570939687567b0a673662e40cebb335803088a",
+  "license": "LGPL-2.1-or-later",
+  "description": "Custom static Windows x64 audio-only build. File/pipe input; no network/video libraries; PCM and FLAC encoders only.",
+  "run_url": "https://github.com/Quinloan/ccMusic-Bilibili-Player/actions/runs/39018299209",
+  "exe_sha256": "050004b0fd86ec7e69f3dad67960d0e6d8a400c10ac9085dbcdf8cc517a1da84",
+  "bytes": 4027392,
+  "files": {
+    "FF_VERSION": "247010ecbfcb160fde1f9b58874a1e074ef9071d5fb140e42310c6a4f62e6376",
+    "FFmpeg-source.tar.gz": "3f768271927cbfef65d475bd48570939687567b0a673662e40cebb335803088a",
+    "LICENSE-FFmpeg.txt": "246041b6ecf9bc32d718a62c57877c78b5eb397b6467e74ed7ae2626ab189c30",
+    "LICENSE-LGPL-2.1.txt": "246041b6ecf9bc32d718a62c57877c78b5eb397b6467e74ed7ae2626ab189c30",
+    "LICENSE-TOOLCHAIN-gcc-mingw-w64-base.txt": "a481f772f7a53335f13b32c6c54eb1c8577ce97704edd3757ab7ed4287a8e96a",
+    "LICENSE-TOOLCHAIN-gcc-mingw-w64-x86-64-posix.txt": "a481f772f7a53335f13b32c6c54eb1c8577ce97704edd3757ab7ed4287a8e96a",
+    "LICENSE-TOOLCHAIN-mingw-w64-common.txt": "af23297b7d17e8e31817a5d58088de6fdafe34705bb5a7d1d330f08711b31314",
+    "build-ffmpeg-audio.sh": "4bddcf0aa5006a9b0c843ae951d99ab3e49f28c5a96d0157f13f98eb4df167f8",
+    "compiler-version.txt": "756fa240e24021b6d13731cbfede2cfcf44fd1c2a4a3f7d8eb446252387bac45",
+    "config.h": "c899f62ff61a233c7d75cb3a9f6d81fe160ac3ec21bf326ad5b6ed4286a0c7a2",
+    "config.log": "8d09cbd02ffb93f1f0cb296f5ebcc4639ebbc6677602bf41b80d667d8b216958",
+    "config.mak": "b93d3a888fbb3123414969e9589e46dbe15bd084fef3136e882f377f1a4de77a",
+    "config_components.h": "0be2fe41c3a220ccdf756b71662c378b3223bb32320ef2dacff3a972d413a5f9",
+    "ffmpeg.exe": "050004b0fd86ec7e69f3dad67960d0e6d8a400c10ac9085dbcdf8cc517a1da84",
+    "toolchain-packages.txt": "27a2872d5834ac2f72a28ca4fc1169ba09ac4ee5232b46c744956966dfef5c4c",
+    "windows-imports.txt": "377b8f51277b1910ccea87254a83c5e5bcbeaf3e84e3708cbc2b0eb843facb7f"
+  }
+}

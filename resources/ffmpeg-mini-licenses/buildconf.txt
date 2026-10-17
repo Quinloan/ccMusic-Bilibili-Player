@@ -1,0 +1,41 @@
+
+  configuration:
+    --prefix=/home/runner/work/ccMusic-Bilibili-Player/ccMusic-Bilibili-Player/out
+    --target-os=mingw32
+    --cross-prefix=x86_64-w64-mingw32-
+    --arch=x86_64
+    --pkg-config=false
+    --enable-cross-compile
+    --enable-static
+    --disable-shared
+    --extra-ldflags=-static
+    --disable-everything
+    --disable-gpl
+    --disable-version3
+    --disable-doc
+    --disable-debug
+    --disable-avdevice
+    --disable-swscale
+    --disable-postproc
+    --disable-network
+    --disable-autodetect
+    --disable-ffprobe
+    --disable-ffplay
+    --enable-swresample
+    --enable-avfilter
+    --enable-filter='aresample,aformat,abuffer,abuffersink'
+    --enable-demuxer='mov,mp3,flac,ogg,wav'
+    --enable-decoder='aac,mp3,flac,opus,vorbis,pcm_s16le'
+    --enable-parser='aac,mp3,flac,opus,vorbis'
+    --enable-protocol='file,pipe'
+    --enable-muxer='pcm_s16le,wav,null'
+    --enable-encoder=pcm_s16le
+    --enable-small
+ffmpeg version 7.1 Copyright (c) 2000-2024 the FFmpeg developers
+  built with gcc 13-win32 (GCC)
+  configuration: --prefix=/home/runner/work/ccMusic-Bilibili-Player/ccMusic-Bilibili-Player/out --target-os=mingw32 --cross-prefix=x86_64-w64-mingw32- --arch=x86_64 --pkg-config=false --enable-cross-compile --enable-static --disable-shared --extra-ldflags=-static --disable-everything --disable-gpl --disable-version3 --disable-doc --disable-debug --disable-avdevice --disable-swscale --disable-postproc --disable-network --disable-autodetect --disable-ffprobe --disable-ffplay --enable-swresample --enable-avfilter --enable-filter='aresample,aformat,abuffer,abuffersink' --enable-demuxer='mov,mp3,flac,ogg,wav' --enable-decoder='aac,mp3,flac,opus,vorbis,pcm_s16le' --enable-parser='aac,mp3,flac,opus,vorbis' --enable-protocol='file,pipe' --enable-muxer='pcm_s16le,wav,null' --enable-encoder=pcm_s16le --enable-small
+  libavutil      59. 39.100 / 59. 39.100
+  libavcodec     61. 19.100 / 61. 19.100
+  libavformat    61.  7.100 / 61.  7.100
+  libavfilter    10.  4.100 / 10.  4.100
+  libswresample   5.  3.100 /  5.  3.100

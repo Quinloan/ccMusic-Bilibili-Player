@@ -6,15 +6,16 @@ const mark = (s) => console.log('[perf] ' + s + ' @' + Math.round(performance.no
 mark('脚本开始执行');
 const B = window.api; // 注意：不能用 const api，会与 contextBridge 暴露的 window.api 冲突
 const audio = $('#audio');
+if (localStorage.prefFlac == null) localStorage.prefFlac = '1';
 
 const S = {
   view: 'library',
-  folders: [],   // 收藏夹：持久歌单，手动整理
+  folders: [],   // 歌单：持久歌单，手动整理
   active: null,
   cur: -1,
-  queue: [],     // 播放列表：当前正在播的临时队列，不进收藏夹
+  queue: [],     // 待播队列：当前正在播的临时队列，不进歌单
   qcur: -1,      // 队列中正在播放的下标
-  mode: 'loop', // loop | single | shuffle
+  mode: ['loop', 'single', 'shuffle'].includes(localStorage.playMode) ? localStorage.playMode : 'loop',
   results: [],
   kw: '',
   page: 1,
@@ -30,9 +31,15 @@ const fmt = (sec) => {
   return `${String(m).padStart(2, '0')}:${String(r).padStart(2, '0')}`;
 };
 // 搜索接口给 "4:30" 字符串，视频接口给秒数，统一展示
-const fmtDur = (d) => (typeof d === 'number' ? fmt(d) : String(d || ''));
+const fmtDur = (d) => {
+  const parts = typeof d === 'string' ? d.split(':') : [];
+  const seconds = typeof d === 'number' ? d : parts.length >= 2 && parts.every(p => /^\d+$/.test(p)) ? parts.reduce((total, part) => total * 60 + Number(part), 0) : 0;
+  if (seconds >= 3600) return `${Math.floor(seconds / 3600)}:${String(Math.floor(seconds % 3600 / 60)).padStart(2, '0')}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
+  return typeof d === 'number' ? fmt(d) : String(d || '');
+};
 const fmtPlay = (n) => (n >= 10000 ? (n / 10000).toFixed(1) + ' 万' : String(n ?? 0));
 const folder = () => S.folders.find((f) => f.id === S.active);
+const songArtist = item => Object.hasOwn(item, 'artist') ? String(item.artist || '') : item.up || item.author || '';
 const save = () =>
   B.setLibrary({
     folders: S.folders, active: S.active, queue: S.queue, qcur: S.qcur,
@@ -62,8 +69,11 @@ function showView(v, opts) {
   S.view = v;
   VIEWS.forEach((id) => { const el = $('#view-' + id); if (el) el.hidden = id !== v; });
   $$('.nav-item').forEach((n) => n.classList.toggle('on', n.dataset.view === v));
+  $$('#folders .folder').forEach(n => n.classList.toggle('on', v === 'library' && n.dataset.id === S.active));
   const back = $('#backBtn');
   if (back) back.classList.toggle('dim', viewStack.length === 0);
+  scheduleVisibleSongCovers();
+  if (v === 'search') scheduleSearchMore();
 }
 // 返回上一视图；没有历史时提示
 function goBack() {
@@ -116,11 +126,13 @@ async function init() {
     S.active = 'f1';
     save();
   }
-  // 播放列表：上次退出时的队列，恢复但不自动播放
+  // 待播队列：上次退出时的队列，恢复但不自动播放
   S.queue = Array.isArray(lib?.queue) ? lib.queue.filter((x) => x && x.bvid) : [];
   S.qcur = Number.isInteger(lib?.qcur) && lib.qcur < S.queue.length ? lib.qcur : -1;
-  audio.volume = 0.8; // 仍是 80%，滑块位置按曲线反推（约 89）
-  $('#vol').value = posFromVol(0.8);
+  restorePendingTasks();
+  const savedVolume = Number(localStorage.savedVolume ?? 0.8);
+  audio.volume = Number.isFinite(savedVolume) ? Math.max(0, Math.min(1, savedVolume)) : 0.8;
+  $('#vol').value = posFromVol(audio.volume);
   renderFolders();
   renderList();
   renderQueue();
@@ -234,50 +246,76 @@ const SPLIT_MIN_DURATION = 600; // 超过 10 分钟的长视频就按静音切�
 let lastSplitTip = '';
 if (B.onSplitProgress) {
   B.onSplitProgress((p) => {
-    const tip = p.stage === 'download'
-      ? `分歌：下载音频 ${p.pct || 0}%`
+    if (p.requestId) { taskProgress(p); return; }
+    const tip = p.stage === 'cached'
+      ? '分歌：已读取分析结果'
+      : p.stage === 'download'
+      ? `正在智能解析 ${p.pct || 0}%`
+      : p.stage === 'lyrics'
+        ? `分歌：正在根据歌词识别 ${(+p.done || 0) + 1}/${p.total || 0}`
       : p.stage === 'identify'
         ? `分歌：识别歌名 ${p.done || 0}/${p.total || 0}`
-        : '分歌：正在分析静音…';
+        : '正在智能解析…';
     if (tip === lastSplitTip) return;
     lastSplitTip = tip;
     toast(tip);
   });
 }
 
-async function maybeSplit(f, item) {
+async function maybeSplit(f, item, description = '') {
   if (!item || item.split) return;
   if (!(item.duration >= SPLIT_MIN_DURATION)) return;
   if ((+item.page || 1) > 1) return; // 只处理整段，分 P 不重复分析
-  lastSplitTip = '';
-  toast('长视频，正在分析分歌…');
-  let r;
-  try {
-    r = await B.splitAnalyze(item.bvid, item.cid);
-  } catch (e) {
-    toast('分歌失败：' + (e.message || ''));
-    return;
-  }
-  if (!r.tracks || r.tracks.length < 2) {
-    toast('没检出明显的分曲间隔，保持整段');
-    return;
-  }
+  return runSplitTask(f, item, description);
+}
+function applySplitResult(f, item, r) {
   const idx = f.items.indexOf(item);
   if (idx < 0) return;
+  const batch = uniqueId();
   const tracks = r.tracks.map((t, i) => ({
     ...item,
+    vtitle: item.vtitle || item.title,
     title: t.title || `曲目 ${i + 1}`, // 识别到歌名就用，没有就编号
-    artist: t.artist || '',
+    artist: t.title ? t.artist || '' : '',
+    identifySource: t.title ? t.source || '' : '',
+    sourceTitle: t.source === 'description' ? t.title : undefined,
+    titleMetaVersion: undefined,
+    referenceArtist: t.title ? t.referenceArtist || '' : '',
+    songCover: LibraryModel.songCoverUrl(t.songCover),
+    neteaseId: /^\d{1,20}$/.test(String(t.neteaseId || '')) ? String(t.neteaseId) : '',
     duration: Math.round(t.end - t.start),
     startSec: t.start,
     endSec: t.end,
     split: true,
+    splitBatch: batch,
+    originalDuration: r.duration || item.duration,
   }));
   f.items.splice(idx, 1, ...tracks); // 用切好的曲目替换原来那一整段
-  save(); renderFolders(); renderList();
-  toast(r.named
-    ? `已切成 ${tracks.length} 首，识别出 ${r.named} 首歌名`
-    : `已切成 ${tracks.length} 首（未识别出歌名）`);
+  // Queues contain copies; replace any whole-video copy as well.
+  const oldQueue = S.queue;
+  const oldCurrent = S.qcur;
+  let newCurrent = oldCurrent;
+  const nextQueue = [];
+  oldQueue.forEach((entry, queueIndex) => {
+    const replacement = !entry.split && itemKey(entry) === itemKey(item);
+    if (queueIndex === oldCurrent) {
+      newCurrent = nextQueue.length;
+      if (replacement) {
+        const part = Math.max(0, tracks.findIndex(t => audio.currentTime >= t.startSec && audio.currentTime < t.endSec));
+        newCurrent += part;
+        curSplitStart = tracks[part].startSec; curSplitEnd = tracks[part].endSec;
+        $('#bTitle').textContent = tracks[part].title;
+      }
+    }
+    nextQueue.push(...(replacement ? tracks.map(t => ({ ...t })) : [entry]));
+  });
+  S.queue = nextQueue; S.qcur = newCurrent;
+  if (folder() === f && S.qcur >= 0) S.cur = f.items.findIndex(t => itemKey(t) === itemKey(S.queue[S.qcur]));
+  syncCurrentSegment();
+  save(); renderFolders(); renderList(); renderQueue();
+  offerUndo('已应用分歌结果', () => restoreSplitBatch(f, item, batch));
+  toast(`已加入 ${tracks.length} 首`);
+  return batch;
 }
 
 // ---------------------------------------------------------------- 首页
@@ -285,7 +323,7 @@ async function maybeSplit(f, item) {
 function hotToItem(r) {
   return {
     bvid: r.bvid, cid: r.cid || 0, page: 1, title: r.title, vtitle: r.title,
-    up: r.author || '', cover: r.pic || '', duration: r.duration || 0,
+    up: r.author || '', cover: r.pic || '', duration: durSec(r.duration),
   };
 }
 
@@ -294,21 +332,21 @@ function cardHtml(o, opts) {
   const badge = o.duration ? `<span class="hc-badge">${fmtDur(o.duration)}</span>` : '';
   return `<div class="hcard" data-idx="${opts.idx}" data-kind="${opts.kind}"
       title="${esc(o.title)}">
-    ${cover
+    <div class="hc-artwork">${cover
       ? `<img class="hc-cover" src="${esc(cover)}" loading="lazy" />`
       : `<div class="hc-folder">♫</div>`}
     ${badge}
     <div class="hc-acts">
       <button data-act="play" title="播放">▶</button>
-      <button data-act="queue" title="加入播放列表">＋</button>
-      ${opts.kind === 'hot' ? '<button data-act="add" title="加入收藏夹">♥</button>' : ''}
-    </div>
+      <button data-act="queue" title="加入待播队列">＋</button>
+      ${opts.kind === 'hot' ? '<button data-act="add" title="加入歌单">♥</button>' : ''}
+    </div></div>
     <div class="hc-t">${esc(o.title)}</div>
     <div class="hc-u">${esc(opts.sub || '')}</div>
   </div>`;
 }
 
-// 首页只放「音乐区热门」；最近播放和收藏夹入口不在这里
+// 首页只放「音乐区热门」；最近播放和歌单入口不在这里
 function renderHome() {
   if (S.hot.length) renderHotCards(); // 已拿到过就直接画，避免每次切首页都空白
 }
@@ -322,8 +360,8 @@ function bindHomeCards(box, kind) {
       if (!r) return;
       if (act) {
         e.stopPropagation();
-        if (act === 'add') { await addToFolder(r); return; }   // 加入收藏夹
-        if (act === 'queue') { qToastAdd([hotToItem(r)]); return; } // 加入播放列表
+        if (act === 'add') { await addToFolder(r); return; }   // 加入歌单
+        if (act === 'queue') { qToastAdd([hotToItem(r)]); return; } // 加入待播队列
       }
       await playSearchItem(r); // ▶ 或点卡片本体：多 P 会自动弹分 P 面板
     };
@@ -343,7 +381,6 @@ function renderHotCards() {
 
 // 首页就是搜索「音乐」的结果；只剔掉课程/教程类和短于 1 分钟的内容，长合集照常显示
 const HOME_KW = '音乐';
-const HOME_BAD = /教程|教学|课程|零基础|入门|进阶/i;
 const durSec = (d) =>
   typeof d === 'string' && d.includes(':')
     ? d.split(':').reduce((a, b) => a * 60 + (+b || 0), 0)
@@ -358,8 +395,7 @@ async function loadHot(attempt = 0) {
     for (const x of [...(r1.list || []), ...(r2.list || [])]) {
       if (seen.has(x.bvid)) continue;
       seen.add(x.bvid);
-      const d = durSec(x.duration);
-      if (d >= 60 && !HOME_BAD.test(x.title || '')) S.hot.push(x);
+      if (MusicSearch.eligible(x, HOME_KW)) S.hot.push(x);
     }
   } catch (e) {
     S.hot = [];
@@ -406,33 +442,28 @@ $('#confirmModal').onclick = (e) => {
 function renderFolders() {
   $('#folders').innerHTML = S.folders
     .map(
-      (f) => `<div class="folder ${f.id === S.active ? 'on' : ''}" data-id="${f.id}">
+      (f) => `<div class="folder ${S.view === 'library' && f.id === S.active ? 'on' : ''}" data-id="${f.id}">
         <span class="name">${esc(f.name)}</span>
         <span><span class="cnt">${f.items.length}</span>${
-          S.folders.length > 1 ? `<span class="del" data-del="${f.id}">×</span>` : ''
+          `<button class="folder-menu" data-menu="${esc(f.id)}" title="歌单操作" aria-label="歌单操作">⋯</button>`
         }</span></div>`
     )
     .join('');
   $$('#folders .folder').forEach((el) => {
     el.onclick = async (e) => {
-      const del = e.target.dataset.del;
-      if (del) {
-        const f = S.folders.find((x) => x.id === del);
-        if (!f) return;
-        const n = f.items.length;
-        const ok = await askConfirm(
-          '删除收藏夹',
-          `「${f.name}」${n ? `及其中的 ${n} 首歌` : ''}将被删除，删除后无法恢复。`,
-          '删除收藏夹'
-        );
-        if (!ok) return;
-        S.folders = S.folders.filter((x) => x.id !== del);
-        if (S.active === del) S.active = S.folders[0].id;
-        save(); renderFolders(); renderList(); showView('library');
-        toast(`已删除收藏夹「${f.name}」`);
+      const menu = e.target.closest('[data-menu]');
+      if (menu) {
+        e.stopPropagation();
+        const f = S.folders.find(x => x.id === menu.dataset.menu);
+        if (f) showCtxMenu(e.clientX, e.clientY, [
+          { label: '选择歌曲下载…', action: () => openDownloadPicker(f.items, f.name) },
+          { label: '重命名歌单', action: () => renameFolder(f) },
+          { label: '删除歌单', action: () => deleteFolder(f) },
+        ]);
         return;
       }
       S.active = el.dataset.id;
+      librarySelection.clear(); libraryQuery = ''; $('#libFilter').value = ''; updateLibrarySelection();
       save(); renderFolders(); renderList(); showView('library');
     };
   });
@@ -443,13 +474,15 @@ function rowHtml(it, i, extra) {
   // 多 P 视频的分 P 条目：标题前带 P 号徽标，悬浮提示所属视频（分歌切出的曲目不是分 P，不带）
   const badge = !it.split && (pg > 1 || (it.vtitle && it.vtitle !== it.title)) ? `<span class="ptag">P${pg}</span>` : '';
   return `<div class="row ${extra || ''} ${i === S.cur ? 'on' : ''}" data-i="${i}" title="${esc(it.vtitle || it.title)}">
-    <img src="${esc(it.cover || '')}" loading="lazy" />
+    ${librarySelecting ? `<input class="song-check" type="checkbox" aria-label="选择 ${esc(it.title)}" ${librarySelection.has(itemKey(it)) ? 'checked' : ''} />` : ''}
+    <img src="${esc(itemCover(it))}" data-fallback="${esc(it.cover || '')}" loading="lazy" />
     <div class="meta">
       <div class="t">${badge}${esc(it.title)}</div>
-      <div class="u">${esc(it.up || it.author || '')} · ${fmtDur(it.duration)}</div>
+      <div class="u">${[esc(songArtist(it)), fmtDur(it.duration)].filter(Boolean).join(' · ')}</div>
     </div>
     <div class="acts">
       <button data-play="${i}">播放</button>
+      <button data-dl="${i}">下载</button>
       <button data-rm="${i}">移除</button>
     </div></div>`;
 }
@@ -489,20 +522,31 @@ function groupHtml(f, start, count, collapsed) {
     <span class="garrow">${collapsed ? '▸' : '▾'}</span>
     <div class="acts">
       <button data-gplay="${start}">播放</button>
+      <button data-gdl="${start}" data-count="${count}">选择下载…</button>
       <button data-grm="${start}" data-count="${count}">移除</button>
     </div></div>`;
 }
 
 function renderList() {
+  scheduleVisibleSongCovers();
   const f = folder();
+  if (!f) return;
+  S.cur = S.queue[S.qcur] ? f.items.findIndex(item => itemKey(item) === itemKey(S.queue[S.qcur])) : -1;
+  const validKeys = new Set(f.items.map(itemKey));
+  for (const key of librarySelection) if (!validKeys.has(key)) librarySelection.delete(key);
+  updateLibrarySelection();
+  $('#playAll').disabled = !f.items.length;
   $('#libTitle').textContent = f.name;
   $('#libCount').textContent = `${f.items.length} 首`;
   if (!f.items.length) {
-    $('#list').innerHTML = '<div class="empty">这个收藏夹还是空的，去上方搜索框找几首加进来</div>';
+    $('#list').innerHTML = '<div class="empty">这个歌单还是空的，去上方搜索框找几首加进来</div>';
     return;
   }
-  // 相邻的同视频多 P 条目聚成一组：可合并成一行，也可展开
   const collapsed = collapsedSet();
+  if (libraryQuery || librarySelecting) {
+    $('#list').innerHTML = f.items.map((item, index) => libraryMatches(item) ? rowHtml(item, index) : '').join('') || '<div class="empty">歌单中没有匹配的曲目</div>';
+  } else {
+  // 相邻的同视频多 P 条目聚成一组：可合并成一行，也可展开
   // 同一视频的曲目聚成一组：分 P 合集与"单 P 智能切分"出的曲目都折叠，组头显示视频标题
   const isPart = (it) => !!it.vtitle || (+it.page || 1) > 1;
   let html = '';
@@ -525,31 +569,40 @@ function renderList() {
     i = j;
   }
   $('#list').innerHTML = html;
+  }
   const rmItems = (start, cnt) => {
+    const removed = f.items.slice(start, start + cnt);
     f.items.splice(start, cnt);
     if (S.cur >= start && S.cur < start + cnt) S.cur = -1;
     else if (S.cur >= start + cnt) S.cur -= cnt;
     save(); renderFolders(); renderList();
+    offerUndo(`已移除 ${cnt} 首`, () => { if (S.folders.includes(f)) f.items.splice(Math.min(start, f.items.length), 0, ...removed); });
   };
   $$('#list .row').forEach((el) => {
     const i = +el.dataset.i;
-    const gp = el.dataset.gplay;
-    const grm = el.dataset.grm;
     const isGroup = el.dataset.bvid !== undefined;
     el.onclick = async (e) => {
-      if (e.target.dataset.rm !== undefined) {
-        const it = f.items[+e.target.dataset.rm];
-        const ok = await askConfirm('从收藏夹移除', `「${it.title}」将从「${f.name}」移除。`, '移除');
+      const button = e.target.closest('button');
+      const action = button?.dataset || {};
+      const gp = action.gplay, grm = action.grm;
+      if (action.dl !== undefined) { await requestDownloads([f.items[+action.dl]]); return; }
+      if (action.gdl !== undefined) { openDownloadPicker(f.items.slice(+action.gdl, +action.gdl + +el.dataset.count), f.items[+action.gdl].vtitle || f.name); return; }
+      if (librarySelecting && !isGroup && action.play === undefined && action.rm === undefined) {
+        const key = itemKey(f.items[i]);
+        librarySelection.has(key) ? librarySelection.delete(key) : librarySelection.add(key);
+        updateLibrarySelection(); renderList(); return;
+      }
+      if (action.rm !== undefined) {
+        const it = f.items[+action.rm];
+        const ok = await askConfirm('从歌单移除', `「${it.title}」将从「${f.name}」移除。`, '移除');
         if (!ok) return;
-        f.items.splice(+e.target.dataset.rm, 1);
-        if (S.cur >= f.items.length) S.cur = -1;
-        save(); renderFolders(); renderList();
+        rmItems(+action.rm, 1);
         toast('已移除');
         return;
       }
-      if (e.target.dataset.play !== undefined) {
+      if (action.play !== undefined) {
         e.stopPropagation();
-        playIndex(+e.target.dataset.play);
+        playIndex(+action.play);
         return;
       }
       if (gp !== undefined) {
@@ -562,7 +615,7 @@ function renderList() {
         const cnt = +el.dataset.count;
         const vtitle = f.items[+grm].vtitle || f.items[+grm].title;
         const ok = await askConfirm(
-          '移除全部分 P',
+          '移除整组',
           `「${vtitle}」的 ${cnt} 首歌将一起从「${f.name}」移除。`,
           `移除 ${cnt} 首`
         );
@@ -571,9 +624,12 @@ function renderList() {
         toast(`已移除 ${cnt} 首`);
         return;
       }
+      if (button) return;
       if (isGroup) { toggleCollapsed(el.dataset.bvid); return; }
-      playIndex(i);
+      $$('#list .row.selected').forEach(row => row.classList.remove('selected'));
+      el.classList.add('selected');
     };
+    el.ondblclick = e => { if (!librarySelecting && !e.target.closest('button, input')) { if (isGroup) playIndex(+el.dataset.start); else playIndex(i); } };
     el.oncontextmenu = (e) => {
       e.preventDefault();
       if (isGroup) {
@@ -583,12 +639,14 @@ function renderList() {
         showCtxMenu(e.clientX, e.clientY, [
           { label: collapsed.has(bid) ? '展开全部 P' : '收起', action: () => toggleCollapsed(bid) },
           { label: '播放', action: () => playIndex(start) },
+          { label: '选择歌曲下载…', action: () => openDownloadPicker(f.items.slice(start, start + cnt), f.items[start].vtitle || f.name) },
+          ...(f.items[start].split ? [{ label: '恢复整段…', action: () => restoreWholeVideo(f, f.items[start]) }] : []),
           { label: '在浏览器打开 B 站页面', action: () => B.openExternal('https://www.bilibili.com/video/' + bid) },
           { label: '复制视频链接', action: () => { B.copyText('https://www.bilibili.com/video/' + bid); toast('链接已复制'); } },
           { label: '移除全部', action: async () => {
               const vtitle = f.items[start].vtitle || f.items[start].title;
               const ok = await askConfirm(
-                '移除全部分 P',
+                '移除整组',
                 `「${vtitle}」的 ${cnt} 首歌将一起从「${f.name}」移除。`,
                 `移除 ${cnt} 首`
               );
@@ -602,16 +660,19 @@ function renderList() {
       const it = f.items[i];
       showCtxMenu(e.clientX, e.clientY, [
         { label: '播放', action: () => playIndex(i) },
-        { label: '加入播放列表', action: () => qToastAdd([it]) },
+        { label: '下载（最高可用音质）', action: () => requestDownloads([it]) },
+        { label: '下一首播放', action: () => addNext([it]) },
+        { label: '编辑歌曲信息…', action: () => editSongInfo(it) },
+        ...(it.split ? [{ label: '恢复整段…', action: () => restoreWholeVideo(f, it) }] : []),
+        ...(!it.split && canSplitItem(it) ? [{ label: '智能分歌…', action: () => maybeSplit(f, it) }] : []),
+        { label: '加入待播队列', action: () => qToastAdd([it]) },
         { label: '该视频的全部分 P…', action: () => openPartsOfVideo(it.bvid) },
         { label: '在浏览器打开 B 站页面', action: () => B.openExternal('https://www.bilibili.com/video/' + it.bvid) },
         { label: '复制视频链接', action: () => { B.copyText('https://www.bilibili.com/video/' + it.bvid); toast('链接已复制'); } },
         { label: '从歌单移除', action: async () => {
-            const ok = await askConfirm('从收藏夹移除', `「${it.title}」将从「${f.name}」移除。`, '移除');
+            const ok = await askConfirm('从歌单移除', `「${it.title}」将从「${f.name}」移除。`, '移除');
             if (!ok) return;
-            f.items.splice(i, 1);
-            if (S.cur >= f.items.length) S.cur = -1;
-            save(); renderFolders(); renderList();
+            rmItems(i, 1);
             toast('已移除');
           } },
       ]);
@@ -620,22 +681,36 @@ function renderList() {
 }
 
 function renderResults(append = false) {
-  const html = S.results.map((r, i) => {
+  const list = $('#results');
+  const top = list.scrollTop;
+  const anchor = append ? [...list.querySelectorAll('.row')].find(row => row.getBoundingClientRect().bottom > list.getBoundingClientRect().top) : null;
+  const anchorIndex = anchor?.dataset.i, anchorOffset = anchor ? anchor.getBoundingClientRect().top - list.getBoundingClientRect().top : 0;
+  const visible = visibleSearchResults();
+  const html = visible.map((r) => {
+    const i = S.results.indexOf(r);
     const playTxt = r.play != null && r.play !== '' ? ` · ${fmtPlay(r.play)}播放` : '';
-    const ptag = r.partsCount > 1 ? `<span class="gtag">合集 ${r.partsCount}P</span>` : '';
-    return `<div class="row" data-i="${i}">
+    const ptag = `<span class="type-tag">${r.partsCount > 1 ? `多 P · ${r.partsCount}` : durSec(r.duration) >= 600 ? '长视频' : durSec(r.duration) >= 180 ? '单曲' : '短视频'}</span>`;
+    const saved = S.folders.some(f => f.items.some(item => item.bvid === r.bvid));
+    return `<div class="row ${selectedResult === r.bvid ? 'selected' : ''}" data-i="${i}" title="${esc(r.title)}">
       <img src="${r.pic}" loading="lazy" />
       <div class="meta">
         <div class="t">${ptag}${esc(r.title)}</div>
-        <div class="u">${esc(r.author || '')} · ${fmtDur(r.duration)}${playTxt}</div>
+        <div class="u">${esc(r.author || '')} · ${fmtDur(r.duration)}${playTxt}${saved ? ' · 已收藏' : ''}</div>
       </div>
       <div class="acts">
         <button data-play="${i}">播放</button>
-        <button data-add="${i}">加入</button>
+        <button data-add="${i}">加入歌单</button>
+        <button data-download="${i}">下载</button>
       </div></div>`;
   }).join('');
-  $('#results').innerHTML = append ? $('#results').innerHTML + html : html;
-  $('#moreWrap').hidden = !S.hasMore;
+  list.innerHTML = (html || `<div class="empty">${searchEmptyText()}</div>`)
+    + (S.searchDirect ? '' : '<div id="searchPager" class="search-pager" role="status"><span></span><button hidden>重试</button></div>');
+  if (append) {
+    const nextAnchor = anchorIndex !== undefined ? list.querySelector(`.row[data-i="${anchorIndex}"]`) : null;
+    list.scrollTop = top;
+    if (nextAnchor) list.scrollTop += nextAnchor.getBoundingClientRect().top - list.getBoundingClientRect().top - anchorOffset;
+  } else list.scrollTop = 0;
+  updateSearchPager();
   $$('#results .row').forEach((el) => {
     const i = +el.dataset.i;
     el.onclick = async (e) => {
@@ -644,15 +719,21 @@ function renderResults(append = false) {
         await addToFolder(S.results[i]);
         return;
       }
-      await playSearchItem(S.results[i]);
+      if (e.target.closest('[data-download]')) { await downloadSearchItem(S.results[i]); return; }
+      if (e.target.closest('[data-play]')) { await playSearchItem(S.results[i]); return; }
+      selectedResult = S.results[i].bvid;
+      $$('#results .row.selected').forEach(row => row.classList.remove('selected')); el.classList.add('selected');
     };
+    el.ondblclick = e => { if (!e.target.closest('button')) playSearchItem(S.results[i]); };
     el.oncontextmenu = (e) => {
       e.preventDefault();
       const r = S.results[i];
       showCtxMenu(e.clientX, e.clientY, [
         { label: '播放', action: () => playSearchItem(r) },
-        { label: '加入收藏夹', action: () => addToFolder(r) },
-      { label: '加入播放列表', action: () => qToastAdd([{
+        { label: '下一首播放', action: () => addNext([hotToItem(r)]) },
+        { label: '加入歌单', action: () => addToFolder(r) },
+        { label: '下载（最高可用音质）', action: () => downloadSearchItem(r) },
+      { label: '加入待播队列', action: () => qToastAdd([{
         bvid: r.bvid, page: r.page || 1, title: r.title, vtitle: r.title,
         up: r.author, cover: r.pic, duration: r.duration,
       }]) },
@@ -662,6 +743,7 @@ function renderResults(append = false) {
       ]);
     };
   });
+  scheduleSearchMore();
 }
 
 // ---------------------------------------------------------------- 右键菜单
@@ -690,14 +772,59 @@ function showCtxMenu(x, y, items) {
 }
 
 // ---------------------------------------------------------------- 搜索
+let searchRequest = 0;
+let searchLoading = false;
+let searchError = '';
+let searchAutoTimer = null;
+let searchIdlePages = 0;
+let searchAutoPaused = false;
+function searchEmptyText() {
+  if (searchError) return '搜索暂时不可用';
+  if (searchLoading || (S.hasMore && !searchAutoPaused)) return S.page > 0 ? '正在查找符合筛选的结果…' : '搜索中…';
+  return S.results.length ? '没有符合当前筛选的结果' : '没有找到结果';
+}
+function updateSearchPager() {
+  $('#results').setAttribute('aria-busy', String(searchLoading));
+  const empty = $('#results').querySelector('.empty');
+  if (empty && !S.searchDirect) empty.textContent = searchEmptyText();
+  const pager = $('#searchPager');
+  if (!pager) return;
+  pager.hidden = S.searchDirect || (searchLoading && !S.results.length);
+  pager.querySelector('span').textContent = searchError ? '加载失败' : searchLoading ? '正在加载…' : searchAutoPaused ? '暂未找到更多匹配结果' : S.hasMore ? '' : S.results.length ? '没有更多了' : '';
+  const retry = pager.querySelector('button');
+  retry.hidden = !searchError;
+  retry.onclick = () => {
+    searchError = ''; searchIdlePages = 0; searchAutoPaused = false;
+    doSearch(S.results.length ? S.page + 1 : 1, S.results.length > 0);
+  };
+}
+function nearSearchBottom() {
+  const list = $('#results');
+  return list.clientHeight > 0 && list.scrollHeight - list.scrollTop - list.clientHeight < 180;
+}
+function scheduleSearchMore() {
+  if (searchAutoTimer !== null) return;
+  searchAutoTimer = setTimeout(() => {
+    searchAutoTimer = null;
+    if (S.view === 'search' && !S.searchDirect && S.kw && S.hasMore && !searchLoading && !searchError && !searchAutoPaused && nearSearchBottom()) doSearch(S.page + 1, true);
+  }, 350);
+}
+function searchScrollIntent() {
+  if (searchAutoPaused && nearSearchBottom()) { searchAutoPaused = false; searchIdlePages = 0; updateSearchPager(); }
+  scheduleSearchMore();
+}
 async function handleSearch() {
   const raw = $('#kw').value.trim();
   if (!raw) return;
+  rememberSearch(raw);
   const p = parseInput(raw);
   if (p.type === 'keyword') return doSearch(1);
-
+  const request = ++searchRequest;
+  clearTimeout(searchAutoTimer); searchAutoTimer = null;
+  searchLoading = true; searchError = ''; searchAutoPaused = false; searchIdlePages = 0;
+  S.searchDirect = true; S.hasMore = false; S.results = [];
   showView('search');
-  $('#moreWrap').hidden = true;
+  $('#searchHint').hidden = true;
   $('#results').innerHTML = '<div class="empty">识别到视频链接，解析中…</div>';
   try {
     let id = p;
@@ -707,6 +834,7 @@ async function handleSearch() {
       if (!id) throw new Error('链接里没有识别到视频 ID');
     }
     const meta = await B.video(id.value);
+    if (request !== searchRequest) return;
     const parts = meta.parts || [];
     S.results = [{
       bvid: meta.bvid,
@@ -719,6 +847,7 @@ async function handleSearch() {
       partsCount: parts.length,
       meta,
     }];
+    S.searchDirect = true;
     S.hasMore = false;
     renderResults();
     if (parts.length > 1) {
@@ -728,27 +857,54 @@ async function handleSearch() {
       toast('已识别视频');
     }
   } catch (e) {
+    if (request !== searchRequest) return;
     $('#results').innerHTML = `<div class="empty">解析失败：${esc(e.message)}</div>`;
+  } finally {
+    if (request === searchRequest) { searchLoading = false; updateSearchPager(); }
   }
 }
 
 async function doSearch(page = 1, append = false) {
-  const kw = $('#kw').value.trim();
+  if (append && (searchLoading || !S.hasMore || S.searchDirect || S.view !== 'search')) return;
+  const kw = append ? S.kw : $('#kw').value.trim();
   if (!kw) return;
+  if (!append) rememberSearch(kw);
+  const request = ++searchRequest;
   S.kw = kw;
-  S.page = page;
+  clearTimeout(searchAutoTimer); searchAutoTimer = null;
+  searchLoading = true; searchError = '';
   if (!append) {
-    $('#results').innerHTML = '<div class="empty">搜索中…</div>';
+    searchIdlePages = 0; searchAutoPaused = false;
+    S.results = []; S.hasMore = false; S.page = 0;
+    S.searchDirect = false;
+    $('#searchHint').hidden = true;
     showView('search');
-  }
+    renderResults();
+  } else updateSearchPager();
   try {
     const r = await B.search(kw, page);
-    S.results = append ? S.results.concat(r.list) : r.list;
-    S.hasMore = r.hasMore;
-    if (!S.results.length) $('#results').innerHTML = '<div class="empty">没有找到结果</div>';
-    else renderResults(append);
+    if (request !== searchRequest) return;
+    S.page = page;
+    const previousCount = visibleSearchResults().length;
+    S.results = [...new Map((append ? S.results.concat(r.list) : r.list).map(it => [it.bvid, it])).values()];
+    S.hasMore = !!r.hasMore && page < 100;
+    // Do not crawl every remote page when a restrictive filter finds nothing.
+    searchIdlePages = append && visibleSearchResults().length <= previousCount ? searchIdlePages + 1 : 0;
+    searchAutoPaused = searchIdlePages >= 5 || !!r.partial;
+    $('#searchHint').textContent = [r.corrected ? `已按「${r.effectiveQuery}」搜索` : '', r.partial ? '部分结果暂时无法获取' : ''].filter(Boolean).join(' · ');
+    $('#searchHint').hidden = !$('#searchHint').textContent;
+    renderResults(append);
   } catch (e) {
-    $('#results').innerHTML = `<div class="empty">搜索失败：${esc(e.message)}</div>`;
+    if (request !== searchRequest) return;
+    searchError = e.message || '请稍后重试';
+    if (!append) renderResults();
+    updateSearchPager();
+  } finally {
+    if (request === searchRequest) {
+      searchLoading = false;
+      if (!S.results.length) renderResults();
+      updateSearchPager(); scheduleSearchMore();
+    }
   }
 }
 
@@ -758,7 +914,9 @@ let pmMeta = null;      // 当前视频信息（含 parts / season）
 let pmMode = 'parts';   // parts | season
 let pmWantPlay = false; // 加入后是否立即播放
 
-const itemKey = (it) => it.bvid + ':' + (+it.page || 1);
+const sourceKey = (it) => it.bvid + ':' + (+it.page || 1);
+const itemKey = (it) => sourceKey(it)
+  + (it.split ? ':' + it.startSec + ':' + it.endSec : '');
 
 function pmEntries() {
   if (pmMode === 'season' && pmMeta.season) {
@@ -777,6 +935,7 @@ function pmEntries() {
     key: pmMeta.bvid + ':' + p.page,
     no: 'P' + p.page,
     name: multi ? p.part || ('P' + p.page) : pmMeta.title,
+    partTitle: multi ? p.part || '' : '',
     duration: p.duration || 0,
     bvid: pmMeta.bvid, cid: p.cid, page: p.page,
     cover: p.cover || pmMeta.cover, up: pmMeta.up,
@@ -808,13 +967,12 @@ function pmUpdateSum() {
 
 function pmRenderList() {
   const all = pmEntries();
-  const inLib = new Set((folder() ? folder().items : []).map(itemKey));
   $('#pmList').innerHTML = all
     .map(
-      (e) => `<label class="part-row${inLib.has(e.key) ? ' in-lib' : ''}" data-key="${esc(e.key)}">
-        <input type="checkbox" ${inLib.has(e.key) ? '' : 'checked'} />
+      (e) => `<label class="part-row" data-key="${esc(e.key)}">
+        <input type="checkbox" checked />
         <span class="pno">${esc(e.no)}</span>
-        <span class="pname">${esc(e.name)}${inLib.has(e.key) ? '<i class="padded">已在歌单</i>' : ''}</span>
+        <span class="pname">${esc(e.name)}</span>
         <span class="ptime">${fmt(e.duration)}</span>
       </label>`
     )
@@ -865,7 +1023,7 @@ function closePartsPicker() {
   pmMeta = null;
 }
 
-// action: 'play' 仅播放（不动收藏夹） | 'add' 加入歌单 | 'addplay' 加入并播放
+// action: 'play' 仅播放（不动歌单） | 'add' 加入歌单 | 'addplay' 加入并播放
 async function pmCommit(action) {
   const keys = new Set(pmSelectedKeys());
   if (!keys.size) return toast('至少选一个分 P');
@@ -873,35 +1031,30 @@ async function pmCommit(action) {
     .filter((e) => keys.has(e.key))
     .map((e) => ({
       bvid: e.bvid, cid: e.cid, page: e.page,
-      title: e.name, vtitle: e.vtitle || e.name,
+      title: e.name, vtitle: e.vtitle || e.name, partTitle: e.partTitle || '',
       up: e.up, cover: e.cover, duration: e.duration,
     }));
-  closePartsPicker();
-
+  if (action === 'download') { closePartsPicker(); await requestDownloads(all); return; }
   if (action === 'play') {
-    // 仅播放：只放进播放列表，收藏夹一个字都不动
+    closePartsPicker();
+    // 仅播放：只放进待播队列，歌单一个字都不动
     loadQueue(all, 0);
     await playQueueAt(0);
-    toast(`${all.length} 首已进入播放列表（未加入收藏夹）`);
+    toast(`${all.length} 首已进入待播队列（未加入歌单）`);
     return;
   }
 
-  const f = folder();
-  if (!f) return toast('先建一个收藏夹');
-  let added = 0, dup = 0;
-  for (const it of all) {
-    if (f.items.some((x) => itemKey(x) === itemKey(it))) { dup++; continue; }
-    f.items.push(it);
-    added++;
-  }
-  save(); renderFolders(); renderList();
-  toast(`已加入 ${added} 首到《${f.name}》${dup ? `（${dup} 首已存在，已跳过）` : ''}`);
+  const result = await saveItemsToFolder(all, {
+    allowSplit: pmMode === 'season',
+    confirmText: action === 'addplay' ? '加入并播放' : '加入歌单',
+  });
+  if (!result) return; // Cancel returns to the part selection without changing it.
+  closePartsPicker();
 
   if (action === 'addplay') {
-    if (!added && !dup) return;
     showView('library');
-    const f2 = folder();
-    let idx = f2.items.findIndex((x) => keys.has(itemKey(x)));
+    const f2 = result.folder;
+    let idx = f2.items.findIndex((x) => keys.has(sourceKey(x)));
     if (idx < 0) idx = 0;
     loadQueue(f2.items, idx); // 加入后从歌单续播
     await playQueueAt(idx);
@@ -919,21 +1072,100 @@ async function openPartsOfVideo(bvid, opts = {}) {
   }
 }
 
+// All library insertion paths ask for a destination. Eligible long videos default to smart splitting.
+let addChoiceResolve = null;
+let addChoiceCanSplit = false;
+let addChoiceFocus = null;
+function canSplitItem(item) {
+  return !item.split && item.duration >= SPLIT_MIN_DURATION && (+item.page || 1) === 1;
+}
+function chooseAddOptions(items, opts = {}) {
+  if (addChoiceResolve) closeAddDialog(null);
+  addChoiceFocus = document.activeElement;
+  addChoiceCanSplit = opts.allowSplit !== false && items.some(canSplitItem);
+  $('#addTitle').textContent = opts.confirmText || '加入歌单';
+  $('#addSummary').textContent = items.length === 1 ? items[0].title : `已选 ${items.length} 首 · ${fmtTotal(items.reduce((sum, it) => sum + (+it.duration || 0), 0))}`;
+  $('#addFolder').innerHTML = S.folders.map(f => `<option value="${esc(f.id)}">${esc(f.name)}（${f.items.length} 首）</option>`).join('')
+    + '<option value="__new__">＋ 新建歌单…</option>';
+  $('#addFolder').value = S.folders.some(f => f.id === S.active) ? S.active : '__new__';
+  $('#addNewName').value = '';
+  $('#addNewWrap').hidden = $('#addFolder').value !== '__new__';
+  $('#addSplitOptions').hidden = !addChoiceCanSplit;
+  $('#addWhole').checked = !addChoiceCanSplit;
+  $('#addSplit').checked = addChoiceCanSplit;
+  $('#addError').hidden = true;
+  $('#addConfirm').textContent = opts.confirmText || '加入歌单';
+  $('#addModal').hidden = false;
+  $('#addFolder').focus();
+  return new Promise(resolve => { addChoiceResolve = resolve; });
+}
+function closeAddDialog(choice) {
+  $('#addModal').hidden = true;
+  const resolve = addChoiceResolve;
+  addChoiceResolve = null;
+  if (addChoiceFocus?.isConnected) addChoiceFocus.focus();
+  addChoiceFocus = null;
+  if (resolve) resolve(choice);
+}
+function confirmAddDialog(event) {
+  event.preventDefault();
+  const folderId = $('#addFolder').value;
+  const newName = $('#addNewName').value.trim();
+  const error = folderId === '__new__'
+    ? !newName ? '请输入新歌单名称' : S.folders.some(f => f.name === newName) ? '已有同名歌单，请直接选择它' : ''
+    : !S.folders.some(f => f.id === folderId) ? '这个歌单已不存在，请重新选择' : '';
+  if (error) {
+    $('#addError').textContent = error;
+    $('#addError').hidden = false;
+    if (folderId === '__new__') $('#addNewName').focus();
+    return;
+  }
+  closeAddDialog({ folderId, newName, split: addChoiceCanSplit && $('#addSplit').checked });
+}
+async function saveItemsToFolder(items, opts = {}) {
+  if (!items.length) { toast('没有可以添加的曲目'); return null; }
+  const choice = await chooseAddOptions(items, opts);
+  if (!choice) return null;
+  let f;
+  if (choice.folderId === '__new__') {
+    f = { id: 'f' + Date.now() + Math.random().toString(36).slice(2, 8), name: choice.newName, items: [] };
+    S.folders.push(f);
+  } else {
+    f = S.folders.find(candidate => candidate.id === choice.folderId);
+  }
+  if (!f) { toast('歌单已不存在，请重新添加'); return null; }
+  const added = [];
+  let duplicates = 0;
+  for (const item of items) {
+    const exists = f.items.some(x => item.split ? itemKey(x) === itemKey(item) : sourceKey(x) === sourceKey(item));
+    if (exists) { duplicates++; continue; }
+    const copy = { ...item };
+    f.items.push(copy);
+    added.push(copy);
+  }
+  if (S.active !== f.id) S.cur = -1;
+  S.active = f.id;
+  save(); renderFolders(); renderList();
+  toast(`已加入 ${added.length} 首到《${f.name}》${duplicates ? `（${duplicates} 首已存在，已跳过）` : ''}`);
+  queueSongTitles(added);
+  if (choice.split && opts.allowSplit !== false) {
+    // Analyze serially: each completion can replace its own inserted entry safely.
+    (async () => {
+      for (const item of added.filter(canSplitItem)) await maybeSplit(f, item, opts.description || '');
+    })().catch(error => toast('分歌失败：' + error.message));
+  }
+  return { folder: f, added, duplicates };
+}
+
 async function addToFolder(r) {
   try {
     const meta = (r.meta && r.meta.bvid === r.bvid) ? r.meta : await B.video(r.bvid);
     r.meta = meta;
     if ((meta.parts || []).length > 1) return openPartsPicker(meta, { only: r.page || 0 });
-    const f = folder();
-    const key = meta.bvid + ':1';
-    if (f.items.some((x) => itemKey(x) === key)) return toast('已经在歌单里了');
-    f.items.push({
+    await saveItemsToFolder([{
       bvid: meta.bvid, cid: meta.cid, page: 1, title: meta.title, vtitle: meta.title,
       up: meta.up, cover: meta.cover, duration: meta.duration,
-    });
-    save(); renderFolders(); renderList();
-    toast(`已加入《${f.name}》`);
-    maybeSplit(f, f.items[f.items.length - 1]); // 长视频后台切成曲目
+    }], { description: meta.desc });
   } catch (e) {
     toast('加入失败：' + e.message);
   }
@@ -946,7 +1178,7 @@ async function playSearchItem(r) {
     if ((meta.parts || []).length > 1) {
       return openPartsPicker(meta, { only: r.page || 0, play: true });
     }
-    // 单 P：只进播放列表，不动收藏夹
+    // 单 P：只进待播队列，不动歌单
     loadQueue([{
       bvid: meta.bvid, cid: meta.cid, page: 1, title: meta.title, vtitle: meta.title,
       up: meta.up, cover: meta.cover, duration: meta.duration,
@@ -1057,8 +1289,8 @@ function startAgc() {
   }, 400);
 }
 
-// ---------------------------------------------------------------- 播放列表（队列）
-// 与收藏夹分离：只播放不入库的曲目放这里，连播 / 上一首 / 下一首都以它为准
+// ---------------------------------------------------------------- 待播队列（队列）
+// 与歌单分离：只播放不入库的曲目放这里，连播 / 上一首 / 下一首都以它为准
 function syncQueueBtn() {
   const btn = $('#qBtn');
   if (!btn) return;
@@ -1069,27 +1301,33 @@ function syncQueueBtn() {
 }
 
 function renderQueue() {
+  scheduleVisibleSongCovers();
   const box = $('#queueList');
   if (!box) return;
   if (!S.queue.length) {
     box.innerHTML =
-      '<div class="q-empty">播放列表是空的<br/>播放任意歌曲会进入这里<br/>在分 P 面板里选「仅播放」可只播不入库</div>';
+      '<div class="q-empty">待播队列是空的<br/>播放任意歌曲会进入这里<br/>在分 P 面板里选「仅播放」可只播不入库</div>';
   } else {
     box.innerHTML = S.queue
       .map(
         (it, i) => `<div class="q-row ${i === S.qcur ? 'on' : ''}" data-i="${i}"
         title="${esc(it.vtitle || it.title)}">
-        <img class="qcover" src="${esc(it.cover || '')}" loading="lazy" />
+        <img class="qcover" src="${esc(itemCover(it))}" data-fallback="${esc(it.cover || '')}" loading="lazy" />
         <span class="qmeta">
           <span class="qt">${esc(it.title)}</span>
-          <span class="qu">${esc(it.up || '')}</span>
+          <span class="qu">${esc(songArtist(it))}</span>
         </span>
         <span class="qd">${fmtDur(it.duration)}</span>
-        <button class="qx" data-x="${i}" title="从播放列表移除">×</button>
+        <button class="qx" data-x="${i}" title="从待播队列移除">×</button>
       </div>`
       )
       .join('');
     box.querySelectorAll('.q-row').forEach((el) => {
+      el.oncontextmenu = event => {
+        event.preventDefault();
+        const item = S.queue[+el.dataset.i];
+        if (item) showCtxMenu(event.clientX, event.clientY, [{ label: '编辑歌曲信息…', action: () => editSongInfo(item) }]);
+      };
       el.onclick = (e) => {
         if (e.target.dataset.x !== undefined) {
           e.stopPropagation();
@@ -1109,53 +1347,70 @@ function renderQueue() {
   syncQueueBtn();
 }
 
-// 用一份曲目替换整个播放列表，并从 startIdx 开始（不自动播放）
+// 用一份曲目替换整个待播队列，并从 startIdx 开始（不自动播放）
 function loadQueue(items, startIdx = -1) {
   S.queue = (items || []).map((it) => ({ ...it }));
   S.qcur = startIdx >= 0 && startIdx < S.queue.length ? startIdx : -1;
   save();
   renderQueue();
+  queueSongTitles(S.queue);
 }
 
 function appendQueue(items) {
   const keys = new Set(S.queue.map(itemKey));
-  const add = (items || []).filter((it) => !keys.has(itemKey(it)));
+  const add = (items || []).filter((it) => { const key = itemKey(it); if (keys.has(key)) return false; keys.add(key); return true; });
   S.queue = S.queue.concat(add.map((it) => ({ ...it })));
   save();
   renderQueue();
+  queueSongTitles(S.queue);
   return add.length;
 }
 
 function removeFromQueue(i) {
   if (i < 0 || i >= S.queue.length) return;
+  const wasCurrent = S.qcur === i;
   S.queue.splice(i, 1);
   if (S.qcur > i) S.qcur -= 1;
   else if (S.qcur === i) S.qcur = -1;
   save();
   renderQueue();
+  if (wasCurrent) {
+    if (S.queue.length) playQueueAt(Math.min(i, S.queue.length - 1));
+    else clearQueue();
+  }
 }
 
 function clearQueue() {
+  playback.sequence++; clearTimeout(playback.stallTimer);
+  playback.current = null; playback.requested = null;
+  if (playback.seekListener) audio.removeEventListener('loadedmetadata', playback.seekListener);
+  playback.seekListener = null;
+  audio.pause(); audio.removeAttribute('src'); audio.load();
+  curSplitStart = null; curSplitEnd = null;
+  $('#bTitle').textContent = '选择一首音乐'; $('#bUp').textContent = '';
+  $('#cur').textContent = '00:00'; $('#dur').textContent = '00:00'; $('#seek').value = '0';
+  curKbps = 0; curFormat = ''; syncQualityBtn(); setPlaybackStatus('');
   S.queue = [];
   S.qcur = -1;
   save();
   renderQueue();
 }
 
-// 右键「加入播放列表」
+// 右键「加入待播队列」
 function qToastAdd(items) {
   const n = appendQueue(items);
-  toast(n ? `已加入播放列表（${n} 首）` : '已经在播放列表里了');
+  toast(n ? `已加入待播队列（${n} 首）` : '已经在待播队列里了');
 }
 
-// 播放列表里的第 i 首（同时同步收藏夹列表的高亮）
+// 待播队列里的第 i 首（同时同步歌单列表的高亮）
 async function playQueueAt(i) {
   if (i < 0 || i >= S.queue.length) return;
   const it = S.queue[i];
   const f = folder();
   const idx = f ? f.items.findIndex((x) => itemKey(x) === itemKey(it)) : -1;
-  await playTrack(it, idx);
   S.qcur = i;
+  const played = await playTrack(it, idx);
+  if (!played || !S.queue[i] || itemKey(S.queue[i]) !== itemKey(it)) return;
   save();
   renderQueue();
 }
@@ -1164,7 +1419,7 @@ async function playQueueAt(i) {
 async function playIndex(i) {
   const f = folder();
   if (i < 0 || i >= f.items.length) return;
-  loadQueue(f.items, i); // 从收藏夹起播 = 整张歌单作为播放列表
+  loadQueue(f.items, i); // 从歌单起播 = 整张歌单作为待播队列
   await playQueueAt(i);
 }
 
@@ -1180,6 +1435,7 @@ function pickTrack(p) {
 
 // 按钮文字恒为「无损优先」，亮/不亮表达开关；真实码率只放进悬浮提示
 let curKbps = 0;
+let curFormat = '';
 
 // 老数据修复判定：缺 cid、封面还是分P黑帧（storyff）、或标题带「001.」序号前缀
 function needsMetaFix(it) {
@@ -1195,7 +1451,7 @@ async function ensureCid(it) {
   const p = (meta.parts || []).find((x) => +x.page === pg);
   it.cid = (p && p.cid) || meta.cid;
   it.cover = meta.cover; // 统一用视频主封面，与首页一致
-  if (p && p.part) it.title = p.part; // 已清洗过序号的分P名
+  if (!it.split && !it.identifySource && p && p.part) it.title = p.part;
   if (!it.up) it.up = meta.up;
   return it.cid;
 }
@@ -1215,7 +1471,7 @@ async function migrateOldPartItems() {
         const p = (meta.parts || []).find((x) => +x.page === (+it.page || 1));
         it.cid = (p && p.cid) || meta.cid;
         it.cover = meta.cover;
-        if (p && p.part) it.title = p.part;
+        if (!it.split && !it.identifySource && p && p.part) it.title = p.part;
         if (!it.up) it.up = meta.up;
       };
       S.folders.forEach((f) => f.items.forEach(fix));
@@ -1229,50 +1485,106 @@ async function migrateOldPartItems() {
 }
 
 // 分歌曲目的播放区间（null = 整段播放）
+let splitAdvancing = false;
 let curSplitStart = null;
 let curSplitEnd = null;
+const playback = { sequence: 0, current: null, seekListener: null, recovering: false, lastPosition: 0, stallTimer: null };
+function setPlaybackStatus(text, failed = false) {
+  const status = $('#playStatus');
+  if (status) {
+    const quiet = !failed && ['播放中', '已暂停', '等待播放', '已停止', ''].includes(text);
+    status.textContent = quiet ? '' : text; status.hidden = quiet;
+    status.classList.toggle('failed', failed);
+    status.title = failed ? '点击重试' : text;
+    status.disabled = !failed;
+  }
+}
 
-async function playTrack(it, idx) {
+async function playTrack(it, idx, options = {}) {
+  const ticket = ++playback.sequence;
+  clearTimeout(playback.stallTimer);
+  if (playback.seekListener) audio.removeEventListener('loadedmetadata', playback.seekListener);
+  playback.seekListener = null;
+  playback.current = null;
+  playback.requested = { item: it, idx };
+  playback.lastPosition = options.position ?? it.startSec ?? 0;
+  if (audio.pause) audio.pause();
+  setPlaybackStatus(options.recovery ? '正在恢复播放…' : '正在加载…');
   try {
     await ensureCid(it);
-    const p = await B.playurl(it.bvid, it.cid);
+    if (ticket !== playback.sequence) return false;
+    const p = await B.playurl(it.bvid, it.cid, !!options.refresh);
+    if (ticket !== playback.sequence) return false;
     const track = pickTrack(p);
+    if (!track?.url) throw new Error('没有可用音频地址');
     if (idx !== undefined) S.cur = idx;
     // 分歌曲目只播自己那一段：播完由 timeupdate 自动接下一首
     curSplitStart = it.split && it.startSec != null ? it.startSec : null;
     curSplitEnd = it.split && it.endSec != null ? it.endSec : null;
-    audio.src = track.url;
-    await audio.play();
-    if (curSplitStart != null) {
-      const seekTo = () => { try { audio.currentTime = curSplitStart; } catch (e) {} };
+    const urls = [...new Set([track.url, ...(track.backupUrls || [])])];
+    const position = options.position ?? curSplitStart ?? 0;
+    playback.lastPosition = position;
+    playback.current = { item: it, idx, track, urls, urlIndex: options.urlIndex || 0, attempts: options.attempts || 0, ticket, preview: !!options.preview };
+    audio.src = urls[playback.current.urlIndex] || urls[0];
+    if (position > 0) {
+      const seekTo = () => {
+        if (ticket !== playback.sequence) return;
+        try { audio.currentTime = Math.max(curSplitStart ?? 0, Math.min(position, (curSplitEnd ?? Infinity) - 0.05)); } catch (e) {}
+        playback.seekListener = null;
+      };
       if (audio.readyState >= 1) seekTo();
-      else audio.addEventListener('loadedmetadata', seekTo, { once: true });
+      else { playback.seekListener = seekTo; audio.addEventListener('loadedmetadata', seekTo, { once: true }); }
     }
+    await audio.play();
+    if (ticket !== playback.sequence) return false;
     // 音频图要在真正播放后才建（首次播放有用户手势，AudioContext 才不会被挂起）
     applyBalanceRouting();
     if (ac && ac.state === 'suspended') await ac.resume().catch(() => {});
+    if (ticket !== playback.sequence) return false;
     startAgc(); // 每首歌重新测一次补偿增益
-    $('#bCover').src = it.cover || '';
+    setSongCover($('#bCover'), it);
+    requestSongCover(it);
     $('#bTitle').textContent = it.title;
-    $('#bUp').textContent = it.up || it.author || '';
+    $('#bUp').textContent = songArtist(it);
     curKbps = track.kbps || 0;
+    curFormat = p.flac === track ? 'FLAC' : /mp4a/i.test(track.codecs || '') ? 'AAC' : String(track.codecs || '音频').split('.')[0];
     syncQualityBtn();
-    $('#play').textContent = '⏸';
+    setPlayIcon(true);
+    setPlaybackStatus('播放中');
     B.setTrayTip(it.title); // 托盘悬停时显示当前曲目
     renderList();
     renderQueue();
+    return true;
   } catch (e) {
+    if (ticket !== playback.sequence) return false;
+    setPlaybackStatus('播放失败 · 点击重试', true);
+    setPlayIcon(false);
     toast('播放失败：' + e.message);
+    return false;
   }
 }
 
-// 上一首 / 下一首：优先走播放列表，没有队列时退回当前收藏夹
+async function recoverPlayback() {
+  const current = playback.current;
+  if (!current || playback.recovering || current.ticket !== playback.sequence) return;
+  if (current.attempts >= 2) { setPlaybackStatus('播放中断 · 点击重试', true); return; }
+  playback.recovering = true;
+  const position = Math.max(playback.lastPosition, Number(audio.currentTime) || 0);
+  const hasBackup = current.urlIndex + 1 < current.urls.length;
+  try {
+    await playTrack(current.item, current.idx, { recovery: true, position, attempts: current.attempts + 1,
+      refresh: !hasBackup, urlIndex: hasBackup ? current.urlIndex + 1 : 0, preview: current.preview });
+  } finally { playback.recovering = false; }
+}
+
+// 上一首 / 下一首：优先走待播队列，没有队列时退回当前歌单
 function step(d) {
   const q = S.queue;
   if (q.length) {
     let n;
     if (S.mode === 'shuffle') {
-      n = Math.floor(Math.random() * q.length);
+      const choices = q.map((_item, index) => index).filter(index => q.length === 1 || index !== S.qcur);
+      n = choices[Math.floor(Math.random() * choices.length)];
     } else {
       n = S.qcur + d;
       if (n >= q.length) n = 0;
@@ -1321,8 +1633,9 @@ async function openLogin() {
       if (r.status === 'done') {
         clearInterval(pollTimer);
         $('#loginModal').hidden = true;
-        toast('登录成功，音质已解锁');
+        toast('登录成功，已更新可用音质');
         checkLogin();
+        resumeDownloadsAfterLogin();
       }
     } catch (e) {
       clearInterval(pollTimer);
@@ -1417,7 +1730,7 @@ async function initAbout() {
 $$('.nav-item').forEach((el) => {
   el.onclick = () => {
     showView(el.dataset.view);
-    if (el.dataset.view === 'home') renderHome(); // 回到首页时刷新最近播放/收藏夹
+    if (el.dataset.view === 'home') renderHome(); // 回到首页时刷新最近播放/歌单
   };
 });
 
@@ -1517,43 +1830,51 @@ function syncQualityBtn() {
   const el = $('#quality');
   const on = localStorage.prefFlac === '1';
   el.classList.toggle('on', on);
+  el.setAttribute('aria-pressed', String(on));
   el.textContent = '无损优先';
-  el.title = (audio.src && curKbps ? '当前 ' + curKbps + 'kbps · ' : '')
-    + (on ? '已开启' : '已关闭') + ' · 点按切换';
+  el.title = (curFormat ? `当前 ${curFormat}${curKbps ? ` · ${curKbps} kbps` : ''}\n` : '')
+    + (on ? '无损优先已开启' : '无损优先已关闭') + '，点击切换';
+  const actual = $('#actualQuality');
+  if (actual) { actual.textContent = ''; actual.hidden = true; }
 }
 syncQualityBtn();
 
 $('#go').onclick = handleSearch;
 $('#kw').onkeydown = (e) => { if (e.key === 'Enter') handleSearch(); };
-$('#more').onclick = () => doSearch(S.page + 1, true);
+$('#results').addEventListener('scroll', scheduleSearchMore, { passive: true });
+$('#results').addEventListener('wheel', event => { if (event.deltaY > 0) searchScrollIntent(); }, { passive: true });
+$('#results').addEventListener('keydown', event => { if (['End', 'PageDown', 'ArrowDown'].includes(event.key)) searchScrollIntent(); });
+window.addEventListener('resize', scheduleSearchMore);
 
 // ---------------------------------------------------------------- 分 P 面板事件
+$('#addForm').onsubmit = confirmAddDialog;
+$('#addCancel').onclick = () => closeAddDialog(null);
+$('#addModal').onclick = e => { if (e.target.id === 'addModal') closeAddDialog(null); };
+$('#addFolder').onchange = () => {
+  $('#addNewWrap').hidden = $('#addFolder').value !== '__new__';
+  $('#addError').hidden = true;
+  if (!$('#addNewWrap').hidden) $('#addNewName').focus();
+};
 $('#pmCancel').onclick = closePartsPicker;
 $('#partsModal').onclick = (e) => { if (e.target.id === 'partsModal') closePartsPicker(); };
 $('#pmAdd').onclick = () => pmCommit('add');
 $('#pmPlay').onclick = () => pmCommit('addplay');
 $('#pmPlayOnly').onclick = () => pmCommit('play');
+$('#pmDownload').onclick = () => pmCommit('download');
 
-// 播放列表面板
+// 待播队列面板
 $('#qBtn').onclick = () => {
+  $('#downloadsPanel').hidden = true;
+  $('#tasksPanel').hidden = true;
   const p = $('#queuePanel');
   p.hidden = !p.hidden;
   if (!p.hidden) renderQueue();
 };
 $('#qClose').onclick = () => { $('#queuePanel').hidden = true; };
-$('#qClear').onclick = () => { clearQueue(); toast('播放列表已清空'); };
-$('#qSave').onclick = () => {
-  const f = folder();
-  if (!f) return toast('先建一个收藏夹');
-  if (!S.queue.length) return toast('播放列表是空的');
-  let added = 0;
-  for (const it of S.queue) {
-    if (f.items.some((x) => itemKey(x) === itemKey(it))) continue;
-    f.items.push({ ...it });
-    added++;
-  }
-  save(); renderFolders(); renderList();
-  toast(`已把 ${added} 首存入《${f.name}》`);
+$('#qClear').onclick = () => { clearQueue(); toast('待播队列已清空'); };
+$('#qSave').onclick = async () => {
+  if (!S.queue.length) return toast('待播队列是空的');
+  await saveItemsToFolder(S.queue.map(it => ({ ...it })));
 };
 $('#pmAll').onclick = () => pmSetCheck(() => true);
 $('#pmNone').onclick = () => pmSetCheck(() => false);
@@ -1579,33 +1900,55 @@ $('#nfBtn').onclick = () => {
 };
 $('#nfName').onkeydown = (e) => { if (e.key === 'Enter') $('#nfBtn').click(); };
 
-$('#play').onclick = () => {
+$('#play').onclick = async () => {
+  if (audio.error || (!playback.current && playback.requested)) {
+    const last = playback.current || playback.requested;
+    if (last) return playTrack(last.item, last.idx, { refresh: true, position: playback.lastPosition });
+  }
   if (!audio.src) return step(1);
-  audio.paused ? audio.play() : audio.pause();
+  try { audio.paused ? await audio.play() : audio.pause(); }
+  catch (error) { setPlaybackStatus('播放失败 · 点击重试', true); toast(error.message); }
 };
 $('#prev').onclick = () => step(-1);
 $('#next').onclick = () => step(1);
 $('#mode').onclick = () => {
   S.mode = S.mode === 'loop' ? 'single' : S.mode === 'single' ? 'shuffle' : 'loop';
-  const label = { loop: '🔁', single: '🔂', shuffle: '🔀' };
-  $('#mode').textContent = label[S.mode];
+  try { localStorage.playMode = S.mode; } catch (_) {}
+  setModeIcon();
   $('#mode').classList.add('on-mode');
   toast({ loop: '列表循环', single: '单曲循环', shuffle: '随机播放' }[S.mode]);
 };
 
-audio.onplay = () => ($('#play').textContent = '⏸');
-audio.onpause = () => ($('#play').textContent = '▶');
+audio.onplay = () => setPlayIcon(true);
+audio.onpause = () => { clearTimeout(playback.stallTimer); setPlayIcon(false); setPlaybackStatus('已暂停'); };
+audio.onplaying = () => { clearTimeout(playback.stallTimer); setPlaybackStatus('播放中'); };
+audio.onwaiting = () => {
+  setPlaybackStatus('正在缓冲…'); clearTimeout(playback.stallTimer);
+  const ticket = playback.sequence;
+  playback.stallTimer = setTimeout(() => { if (ticket === playback.sequence && !audio.paused) recoverPlayback(); }, 12000);
+};
+audio.onerror = () => {
+  const ticket = playback.sequence;
+  setTimeout(() => { if (ticket === playback.sequence) recoverPlayback(); }, 0);
+};
 audio.onended = () => {
+  if (playback.current?.preview) { audio.pause(); setPlaybackStatus('试听结束'); return; }
   if (S.mode === 'single') {
-    audio.currentTime = 0;
-    audio.play();
+    audio.currentTime = curSplitStart ?? 0;
+    audio.play().catch(() => recoverPlayback());
   } else step(1);
 };
 audio.ontimeupdate = () => {
   if (!audio.duration) return;
+  playback.lastPosition = audio.currentTime;
   const st = curSplitStart, en = curSplitEnd;
   if (st != null && en != null) {
-    if (audio.currentTime >= en) { step(1); return; } // 这首播完，自动接下一首
+    if (audio.currentTime >= en) {
+      if (playback.current?.preview) { audio.pause(); setPlaybackStatus('试听结束'); return; }
+      if (S.mode === 'single') audio.currentTime = st;
+      else if (!splitAdvancing) { splitAdvancing = true; Promise.resolve(step(1)).finally(() => { splitAdvancing = false; }); }
+      return;
+    } // 这首播完，自动接下一首
     const span = Math.max(1, en - st);
     const pos = Math.max(0, audio.currentTime - st);
     $('#seek').value = String(Math.round(Math.min(1, pos / span) * 1000));
@@ -1633,8 +1976,9 @@ const volFromPos = (pos) => {
   return t * t;
 };
 const posFromVol = (v) => Math.round(Math.sqrt(Math.max(0, Math.min(1, +v || 0))) * 100);
-$('#vol').oninput = () => (audio.volume = volFromPos($('#vol').value));
+$('#vol').oninput = () => { audio.volume = volFromPos($('#vol').value); try { localStorage.savedVolume = String(audio.volume); } catch (_) {} };
 $('#loginClose').onclick = () => {
+  cancelPendingDownloadLogin();
   clearInterval(pollTimer);
   $('#loginModal').hidden = true;
 };
@@ -1647,13 +1991,28 @@ $('#quality').onclick = () => {
 };
 
 document.onkeydown = (e) => {
+  if (!$('#downloadLoginModal').hidden || !$('#downloadPickerModal').hidden) return;
+  if (!$('#editModal').hidden || !$('#reviewModal').hidden) return;
+  if (!$('#addModal').hidden) {
+    if (e.key === 'Escape') { e.preventDefault(); closeAddDialog(null); }
+    if (e.key === 'Tab') {
+      const controls = Array.from($('#addModal').querySelectorAll('button, input, select'))
+        .filter(el => !el.disabled && el.getClientRects().length);
+      const index = controls.indexOf(document.activeElement);
+      if (controls.length && (index < 0 || (e.shiftKey ? index === 0 : index === controls.length - 1))) {
+        e.preventDefault();
+        controls[e.shiftKey ? controls.length - 1 : 0].focus();
+      }
+    }
+    return;
+  }
   if (e.key === 'Escape') {
     if (!$('#confirmModal').hidden) return closeConfirm(false);
     if (!$('#settingsModal').hidden) return closeSettings();
     if (!$('#partsModal').hidden) return closePartsPicker();
     if (!$('#loginModal').hidden) return $('#loginClose').click();
   }
-  if (e.code === 'Space' && e.target.tagName !== 'INPUT') {
+  if (e.code === 'Space' && !e.target.closest('input, textarea, select, button, [contenteditable]')) {
     e.preventDefault();
     $('#play').click();
   }
@@ -1696,6 +2055,8 @@ async function selfTest() {
 }
 
 mark('init 调用前');
+initWorkflows();
+initDownloads();
 init();
 async function afterInit() {
   await initDiag();

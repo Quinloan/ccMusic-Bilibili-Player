@@ -19,10 +19,10 @@
       <svg viewBox="0 0 20 20" width="16" height="16" fill="currentColor"><path d="M10 2.6 2.5 8.4V17a.8.8 0 0 0 .8.8H8v-5.2h4V17.8h4.7a.8.8 0 0 0 .8-.8V8.4L10 2.6Z"/></svg>
       <span>首页</span>
     </div>
-    <div class="side-label">我的收藏夹</div>
+    <div class="side-label">我的歌单</div>
     <div id="folders" class="folders"></div>
     <div class="newfolder">
-      <input id="nfName" type="text" placeholder="新建收藏夹" />
+      <input id="nfName" type="text" placeholder="新建歌单" maxlength="80" />
       <button id="nfBtn" title="新建">＋</button>
     </div>
     <div class="spacer"></div>
@@ -38,7 +38,9 @@
         </svg>
       </button>
       <div class="searchbox">
-        <input id="kw" type="text" placeholder="搜索关键词" />
+        <input id="kw" type="text" placeholder="搜索视频标题 / 粘贴链接或 BV 号" list="searchHistory" autocomplete="off" />
+        <datalist id="searchHistory"></datalist>
+        <button id="clearSearch" class="go-icon" title="清空搜索" aria-label="清空搜索">×</button>
         <button id="go" class="go-icon" title="搜索" aria-label="搜索">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
                stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -46,6 +48,8 @@
           </svg>
         </button>
       </div>
+      <button id="taskBtn" class="task-btn" title="分歌任务">任务<span id="taskCount" class="activity-dot" hidden aria-hidden="true"></span></button>
+      <button id="downloadsBtn" class="task-btn" title="音频下载">下载<span id="downloadCount" class="activity-dot" hidden aria-hidden="true"></span></button>
       <button id="avatarBtn" class="topbar-avatar" title="账号">
         <img id="avatarImg" src="../assets/icon.png" alt="" />
       </button>
@@ -61,7 +65,6 @@
         <div class="page home">
           <div class="home-sec">
             <div class="sec-title">音乐推荐</div>
-            <div class="sec-desc">B 站搜索「音乐」的热门结果，点击卡片可加入收藏夹或播放列表</div>
             <div id="homeHot" class="home-grid">
               <div class="muted">正在加载…</div>
             </div>
@@ -71,18 +74,26 @@
 
       <section id="view-library" class="view">
         <div class="view-head">
-          <h2 id="libTitle">我的收藏夹</h2>
+          <h2 id="libTitle">我的歌单</h2>
           <div class="head-right">
             <span id="libCount" class="muted"></span>
             <button id="playAll" class="primary">播放全部</button>
           </div>
         </div>
+        <div class="library-tools">
+          <input id="libFilter" type="search" placeholder="在歌单中查找" aria-label="在歌单中查找" />
+          <select id="libSort" aria-label="歌单排序"><option value="">排序…</option><option value="title">按歌名</option><option value="artist">按歌手 / UP 主</option><option value="duration">按时长</option></select>
+          <button id="libPickDownload">批量下载…</button><button id="libSelect">多选</button><button id="libRename">重命名</button><button id="libImport">导入</button><button id="libExport">导出歌单</button>
+          <input id="importFile" type="file" accept=".json,application/json" hidden />
+        </div>
+        <div id="libBatch" class="library-tools batch-tools" hidden><span id="libSelected">已选 0 首</span><button id="libAll">全选当前结果</button><button id="libMove">移动到…</button><button id="libDownload">下载所选</button><button id="libRemove">移除选中</button></div>
         <div id="list" class="list"></div>
       </section>
 
       <section id="view-search" class="view" hidden>
+        <div class="library-tools search-tools"><span>搜索结果</span><select id="searchAudience" aria-label="听歌筛选"><option value="music">听歌模式 · 至少 3 分钟</option><option value="all">全部内容（含短视频）</option></select><select id="searchFilter" aria-label="筛选搜索结果"><option value="all">全部类型</option><option value="short">单曲（3—10 分钟）</option><option value="long">长视频（10 分钟以上）</option><option value="parts">多 P（已解析）</option></select><select id="searchSort" aria-label="搜索结果排序"><option value="relevance">听歌优先</option><option value="platform">B 站综合顺序</option><option value="duration">时长优先</option><option value="plays">播放量优先</option></select></div>
+        <div id="searchHint" class="search-hint" hidden></div>
         <div id="results" class="list"></div>
-        <div id="moreWrap" class="more-wrap" hidden><button id="more">加载更多</button></div>
       </section>
 
       <section id="view-diag" class="view" hidden>
@@ -119,7 +130,7 @@
             <div class="sec-desc">本地数据与诊断信息，均保存在本机</div>
             <div class="card">
               <div class="row-line">
-                <div class="rl-main"><b>数据目录</b><div class="muted">收藏夹与登录凭据保存在本机</div></div>
+                <div class="rl-main"><b>数据目录</b><div class="muted">歌单与登录凭据保存在本机</div></div>
                 <div class="rl-actions"><button id="openData">打开目录</button></div>
               </div>
               <div class="row-line">
@@ -138,7 +149,7 @@
 
           <div class="product-card">
             <svg class="app-logo" viewBox="0 0 64 64" width="76" height="76">
-              <circle cx="32" cy="32" r="30" fill="#185fa5"></circle>
+              <circle cx="32" cy="32" r="30" fill="var(--accent)"></circle>
               <rect x="25" y="17" width="3.2" height="24" rx="1.6" fill="#fff"></rect>
               <rect x="37" y="17" width="3.2" height="24" rx="1.6" fill="#fff"></rect>
               <path d="M25 18 L40.2 14 L40.2 19 L25 23 Z" fill="#fff"></path>
@@ -166,35 +177,45 @@
     </main>
   </div>
 
+  <aside id="downloadsPanel" class="qpanel downloads-panel" hidden aria-label="音频下载">
+    <div class="download-head"><strong>音频下载</strong><span class="grow"></span><button id="downloadCurrent">下载当前歌曲</button><button id="downloadsClose" aria-label="关闭下载面板">×</button></div>
+    <p id="downloadsEmpty" class="empty">还没有下载任务，可在搜索结果或歌单中点击「下载」。</p>
+    <div id="downloadsList"></div>
+  </aside>
   <aside id="queuePanel" class="qpanel" hidden>
     <div class="qp-head">
-      <b>播放列表</b>
+      <b>待播队列</b>
       <span class="muted" id="qInfo"></span>
       <span class="grow"></span>
       <button id="qClose" class="q-close" title="收起">×</button>
     </div>
     <div id="queueList" class="qp-list"></div>
     <div class="qp-foot">
-      <span class="muted qp-tip">不影响收藏夹</span>
+      <span class="muted qp-tip">不影响歌单</span>
       <span class="grow"></span>
       <button id="qClear" class="mini">清空</button>
-      <button id="qSave" class="mini">存入收藏夹</button>
+      <button id="qSave" class="mini">存入歌单</button>
     </div>
+  </aside>
+  <aside id="tasksPanel" class="qpanel tasks-panel" hidden>
+    <div class="qp-head"><b>分歌任务</b><span class="grow"></span><button id="tasksClose" class="q-close" title="收起任务">×</button></div>
+    <div id="taskEmpty" class="empty">暂无分歌任务</div><div id="taskList" class="task-list"></div>
   </aside>
 </div>
 
 <footer class="bar">
   <img id="bCover" class="cover" />
   <div class="now">
-    <div class="t" id="bTitle">未在播放</div>
-    <div class="u" id="bUp">—</div>
+    <div class="t" id="bTitle">选择一首音乐</div>
+    <div class="u" id="bUp"></div>
+    <button id="playStatus" class="play-status" hidden></button>
   </div>
   <div class="ctrls">
-    <button id="prev" title="上一首">⏮</button>
+    <button id="prev" title="上一首" aria-label="上一首"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M5 4h2v16H5zm14 0v16L8 12Z"/></svg></button>
     <button id="play" class="primary" title="播放/暂停">▶</button>
-    <button id="next" title="下一首">⏭</button>
+    <button id="next" title="下一首" aria-label="下一首"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M17 4h2v16h-2zM5 4l11 8-11 8Z"/></svg></button>
     <button id="mode" title="播放模式">🔁</button>
-    <button id="qBtn" class="q-btn" title="播放列表">
+    <button id="qBtn" class="q-btn" title="待播队列">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
         <path d="M4 6h11"></path><path d="M4 12h11"></path><path d="M4 18h7"></path>
         <path d="M18 10v8"></path><circle cx="17" cy="17" r="2"></circle>
@@ -208,15 +229,66 @@
     <span class="time" id="dur">00:00</span>
   </div>
   <div class="right">
-    <span id="quality" class="quality"></span>
-    <span class="volico">🔊</span>
+    <div class="quality-info"><span id="actualQuality" class="actual-quality" hidden></span><button id="quality" class="quality" title="优先选择无损音质" aria-pressed="true"></button></div>
+    <span class="volico"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M11 4 5 9H2v6h3l6 5Zm4 4a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/></svg></span>
     <input id="vol" type="range" min="0" max="100" value="80" />
   </div>
 </footer>
+<div id="undoBar" class="undo-bar" hidden role="status"><span id="undoText"></span><button id="undoButton">撤销</button><button id="undoClose" title="关闭">×</button></div>
+<div id="completionNotices" class="completion-notices" role="region" aria-label="任务完成提醒"></div>
+
+<div id="editModal" class="modal" hidden><form id="editForm" class="modal-box add-box" role="dialog" aria-modal="true" aria-labelledby="editTitle"><h3 id="editTitle">修改名称</h3><label id="editLabel" class="add-label" for="editValue">名称</label><input id="editValue" class="add-input" maxlength="500" required /><div class="add-actions"><button id="editCancel" type="button">取消</button><button class="primary" type="submit">保存</button></div></form></div>
+<div id="songInfoModal" class="modal" hidden>
+  <form id="songInfoForm" class="modal-box add-box" role="dialog" aria-modal="true" aria-labelledby="songInfoHeading">
+    <h3 id="songInfoHeading">编辑歌曲信息</h3>
+    <label class="add-label" for="songInfoTitle">歌名</label><input id="songInfoTitle" class="add-input" maxlength="500" required />
+    <label class="add-label" for="songInfoArtist">歌手 / 作者</label><input id="songInfoArtist" class="add-input" maxlength="200" />
+    <div class="add-actions"><button id="songInfoCancel" type="button">取消</button><button class="primary" type="submit">保存</button></div>
+  </form>
+</div>
+<div id="reviewModal" class="modal" hidden>
+  <div class="modal-box review-box" role="dialog" aria-modal="true" aria-labelledby="reviewHeading" aria-describedby="reviewHint">
+    <div class="review-header">
+      <h3 id="reviewHeading">分段预览</h3>
+      <p id="reviewTitle"></p>
+      <p id="reviewHint">加入歌单后自动识别歌名。</p>
+    </div>
+    <p id="reviewWarning" class="add-error" role="alert" hidden></p>
+    <div id="reviewRows" class="review-rows"></div>
+    <div class="review-footer">
+      <button id="reviewAdjust" class="review-adjust" aria-expanded="false" aria-controls="reviewRows">调整分段</button>
+      <div class="add-actions"><button id="reviewClose">稍后</button><button id="reviewConfirm" class="primary">加入歌单</button></div>
+    </div>
+  </div>
+</div>
 
 <div id="accountMenu" class="acct-menu" hidden>
   <div id="amHead" class="am-head"></div>
   <div id="amItems"></div>
+</div>
+
+<div id="addModal" class="modal" hidden>
+  <form id="addForm" class="modal-box add-box" role="dialog" aria-modal="true" aria-labelledby="addTitle">
+    <h3 id="addTitle">加入歌单</h3>
+    <p id="addSummary" class="add-summary"></p>
+    <label class="add-label" for="addFolder">保存到歌单</label>
+    <select id="addFolder" class="add-select"></select>
+    <div id="addNewWrap" hidden>
+      <label class="add-label" for="addNewName">新歌单名称</label>
+      <input id="addNewName" class="add-input" type="text" maxlength="80" placeholder="输入歌单名称" />
+    </div>
+    <fieldset id="addSplitOptions" class="add-options" hidden>
+      <legend>长视频添加方式</legend>
+      <label class="add-option"><input id="addSplit" type="radio" name="addMode" value="split" checked />
+        <span><strong>智能分歌</strong><small>先确认分段，加入歌单后逐首识曲</small></span>
+      </label>
+      <label class="add-option"><input id="addWhole" type="radio" name="addMode" value="whole" />
+        <span><strong>整段添加</strong><small>保留完整视频，作为一首播放</small></span>
+      </label>
+    </fieldset>
+    <p id="addError" class="add-error" role="alert" hidden></p>
+    <div class="add-actions"><button id="addCancel" type="button">取消</button><button id="addConfirm" class="primary" type="submit">加入歌单</button></div>
+  </form>
 </div>
 
 <div id="partsModal" class="modal" hidden>
@@ -237,11 +309,12 @@
     </div>
     <div id="pmList" class="parts-list"></div>
     <div class="parts-foot">
-      <span class="muted" id="pmHint">仅播放 = 放进播放列表，不动收藏夹</span>
+      <span id="pmHint" hidden></span>
       <span class="grow"></span>
       <button id="pmCancel">取消</button>
+      <button id="pmDownload">下载所选</button>
       <button id="pmPlayOnly">仅播放</button>
-      <button id="pmAdd">加入歌单</button>
+      <button id="pmAdd">选择歌单…</button>
       <button id="pmPlay" class="primary">加入并播放</button>
     </div>
   </div>
@@ -291,7 +364,6 @@
 
       <div class="sec">
         <div class="sec-title">音质</div>
-        <div class="sec-desc">无损优先与底部那个按钮是同一个开关，两侧会同步</div>
         <div class="card">
           <div class="row-line">
             <div class="rl-main"><b>无损优先</b><div class="muted">有 FLAC 就播 FLAC，没有则取能取到的最高音质</div></div>
@@ -355,6 +427,28 @@
 </div>
 
 <audio id="audio"></audio>
+<div id="downloadPickerModal" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="downloadPickerTitle">
+  <div class="modal-box download-picker-box">
+    <h3 id="downloadPickerTitle">选择要下载的歌曲</h3>
+    <p id="downloadPickerSource" class="muted"></p>
+    <input id="downloadPickerQuery" type="search" placeholder="查找歌名 / 歌手" aria-label="在下载选曲中查找" />
+    <div class="download-picker-tools"><button id="downloadPickerAll">全选当前结果</button><button id="downloadPickerInvert">反选当前结果</button><button id="downloadPickerClear">清空已选</button></div>
+    <div id="downloadPickerList" class="download-picker-list"></div>
+    <p id="downloadPickerSummary" class="muted" role="status"></p>
+    <div class="download-picker-foot"><span class="muted">默认最高可用音质 · 每批最多 100 首</span><span class="grow"></span><button id="downloadPickerCancel">取消</button><button id="downloadPickerConfirm" class="primary" disabled>下载所选</button></div>
+  </div>
+</div>
+<div id="downloadLoginModal" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="downloadLoginTitle">
+  <div class="modal-box download-login-box">
+    <h3 id="downloadLoginTitle">登录后获取最高音质</h3>
+    <p id="downloadLoginText">未登录时无法获取账号可用的最高音质。请先登录 B 站；部分音质还需要对应权益，且视频本身提供该音轨。</p>
+    <div class="download-login-actions"><button id="downloadLoginCancel">取消</button><button id="downloadLimited">继续当前可用音质</button><button id="downloadLoginGo" class="primary">去登录</button></div>
+  </div>
+</div>
+<script src="music-search-policy.js"></script>
+<script src="library-model.js"></script>
+<script src="workflows.js"></script>
+<script src="downloads.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
