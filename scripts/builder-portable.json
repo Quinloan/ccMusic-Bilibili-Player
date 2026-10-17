@@ -10,18 +10,32 @@
     "preload.cjs",
     "renderer/**",
     "package.json",
-    "assets/icon.png"
+    "assets/icon.png",
+    "audio-analysis.cjs",
+    "shazam-provider.cjs",
+    "lyric-recognition.cjs",
+    "analysis-cache.cjs",
+    "netease-lyrics.cjs",
+    "video-search.cjs",
+    "cancellation.cjs",
+    "audio-downloads.cjs",
+    "download-ipc.cjs",
+    "THIRD-PARTY-NOTICES.md"
   ],
   "win": {
     "icon": "assets/icon.ico",
     "target": [
       {
         "target": "portable",
-        "arch": ["x64"]
+        "arch": [
+          "x64"
+        ]
       },
       {
         "target": "zip",
-        "arch": ["x64"]
+        "arch": [
+          "x64"
+        ]
       }
     ]
   },
@@ -32,5 +46,33 @@
   "nsis": {
     "oneClick": true,
     "shortcutName": "ccMusic"
-  }
+  },
+  "extraResources": [
+    {
+      "from": "resources/download-audio",
+      "to": "download-audio",
+      "filter": ["ffmpeg.exe", "LICENSE*", "download-manifest.json", "README.md"]
+    },
+    {
+      "from": "resources/ffmpeg-mini.exe",
+      "to": "ffmpeg-mini.exe"
+    },
+    {
+      "from": "resources/afp",
+      "to": "afp"
+    },
+    {
+      "from": "resources/whisper",
+      "to": "whisper",
+      "filter": [
+        "ggml-small-q5_1.bin",
+        "download-manifest.json",
+        "LICENSE*",
+        "THIRD-PARTY*",
+        "Release/ggml*.dll",
+        "Release/whisper.dll",
+        "Release/whisper-cli.exe"
+      ]
+    }
+  ]
 }

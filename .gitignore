@@ -3,3 +3,12 @@ release*/
 shots/
 *.log
 build-*.txt
+
+# Build-time resources and local validation
+resources/whisper/*.bin
+resources/whisper/*.zip
+resources/whisper/Release/
+resources/download-audio/*.exe
+validation/
+handoff/
+release-work/

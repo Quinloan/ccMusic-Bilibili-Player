@@ -1,0 +1,15 @@
+{
+  "tag": "latest",
+  "asset": "ffmpeg-master-latest-win64-lgpl.zip",
+  "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-lgpl.zip",
+  "sha256": "9772c0a18d8d38176eae85a4028fbca506650a7d8d45406130db544b3a5093e8",
+  "checksum_url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/checksums.sha256",
+  "source": "https://github.com/BtbN/FFmpeg-Builds",
+  "license": "LGPL-3.0-or-later",
+  "exe_sha256": "7c8895507345df22d833e06f1f9368ab8e978b7fae4a42e6641f59a380902f93",
+  "version": "ffmpeg version N-127579-g5cb9fcd211-20261016 Copyright (c) 2000-2026 the FFmpeg developers",
+  "build_tag": "autobuild-2026-10-16-13-04",
+  "build_commit": "63ac3265b0789ea16c7b1f8351cd2ad195a28722",
+  "ffmpeg_commit": "5cb9fcd21167cf2f5a2852ea582997bbd0055521",
+  "source_materials": "https://github.com/Quinloan/ccMusic-Bilibili-Player/releases/download/v1.6.0-beta.1/ccMusic-FFmpeg-source-provenance-1.6.0-beta.1.zip"
+}

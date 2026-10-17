@@ -8,11 +8,20 @@ contextBridge.exposeInMainWorld('api', {
   // B 站
   search: (keyword, page) => ipcRenderer.invoke('bili:search', keyword, page),
   video: (id) => ipcRenderer.invoke('bili:video', id),
-  playurl: (bvid, cid) => ipcRenderer.invoke('bili:playurl', bvid, cid),
+  playurl: (bvid, cid, refresh = false) => ipcRenderer.invoke('bili:playurl', bvid, cid, refresh),
   resolve: (url) => ipcRenderer.invoke('bili:resolve', url),
 
+  downloadStart: (items, allowLimited = false) => ipcRenderer.invoke('download:start', items, allowLimited),
+  downloadRetry: (id, allowLimited = false) => ipcRenderer.invoke('download:retry', id, allowLimited),
+  downloadList: () => ipcRenderer.invoke('download:list'),
+  downloadCancel: id => ipcRenderer.invoke('download:cancel', id),
+  downloadDismiss: id => ipcRenderer.invoke('download:dismiss', id),
+  downloadReveal: id => ipcRenderer.invoke('download:reveal', id),
+  onDownloadProgress: callback => ipcRenderer.on('download:progress', (_event, task) => callback(task)),
+
   // 智能分歌（长视频按静音切分成多首）
-  splitAnalyze: (bvid, cid, maxSec) => ipcRenderer.invoke('split:analyze', bvid, cid, maxSec),
+  splitAnalyze: (bvid, cid, maxSec, description, requestId) => ipcRenderer.invoke('split:analyze', bvid, cid, maxSec, description, requestId),
+  splitCancel: requestId => ipcRenderer.invoke('split:cancel', requestId),
   onSplitProgress: (cb) => { ipcRenderer.on('split:progress', (_e, p) => cb(p)); },
 
   // 系统
