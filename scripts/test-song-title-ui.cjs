@@ -44,7 +44,7 @@ async function run() {
     await page.locator('#partsModal:not([hidden])').waitFor(); await page.locator('#pmAdd').click();
     await page.locator('#addModal:not([hidden])').waitFor(); assert.equal(await page.locator('#addSplitOptions').isHidden(), true);
     await page.locator('#addFolder').selectOption('a'); await page.locator('#addConfirm').click();
-    await page.waitForFunction(() => window.testTitleRequests.length === 2);
+    await page.waitForFunction(() => window.testTitleRequests.length === 3);
     assert.deepEqual(await page.evaluate(() => window.testTitleRequests[1].input), { title: '01. 晴天', parentTitle: '周杰伦歌曲全集' });
     await page.evaluate(async () => { loadQueue(folder().items.slice(1), 1); await playQueueAt(1); audio.currentTime = 55; });
     await page.evaluate(() => window.testTitleRequests[1].resolve({ name: '晴天', artist: '周杰伦', cover: 'https://art.test/qingtian.png', matched: true }));

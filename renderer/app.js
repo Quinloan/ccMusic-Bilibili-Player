@@ -146,30 +146,74 @@ async function init() {
 
 const LOGO_SRC = '../assets/icon.png';
 let accountState = { logged: false };
+let loginCheckSequence = 0;
+let startupLoginEligible = true, startupLoginPending = false, startupLoginTimer = null, startupLoginFocus = null;
+
+function dismissStartupLoginReminder(never = false) {
+  if (never) {
+    try { localStorage.startupLoginReminder = '0'; } catch (_) { toast('暂时无法保存提醒设置'); }
+  }
+  startupLoginEligible = false; startupLoginPending = false;
+  clearTimeout(startupLoginTimer); startupLoginTimer = null;
+  const modal = $('#startupLoginModal'), wasOpen = !modal.hidden;
+  modal.hidden = true;
+  if (wasOpen && startupLoginFocus?.isConnected) startupLoginFocus.focus();
+  startupLoginFocus = null;
+}
+function scheduleStartupLoginReminder() {
+  if (!startupLoginEligible || !startupLoginPending || localStorage.startupLoginReminder === '0' || startupLoginTimer !== null) return;
+  startupLoginTimer = setTimeout(() => {
+    startupLoginTimer = null;
+    if (!startupLoginEligible || !startupLoginPending || accountState.logged || accountState.stale || localStorage.startupLoginReminder === '0') return;
+    if (document.querySelector('.modal:not([hidden])')) return;
+    startupLoginEligible = false; startupLoginPending = false;
+    startupLoginFocus = document.activeElement;
+    $('#accountMenu').hidden = true;
+    for (const selector of ['#tasksPanel', '#downloadsPanel', '#queuePanel']) $(selector).hidden = true;
+    $('#startupLoginModal').hidden = false;
+    $('#startupLoginNow').focus();
+  }, 300);
+}
+function initStartupLoginReminder() {
+  const observer = new MutationObserver(scheduleStartupLoginReminder);
+  for (const modal of document.querySelectorAll('.modal')) observer.observe(modal, { attributes: true, attributeFilter: ['hidden'] });
+  $('#startupLoginClose').onclick = () => dismissStartupLoginReminder();
+  $('#startupLoginNever').onclick = () => dismissStartupLoginReminder(true);
+  $('#startupLoginNow').onclick = () => openLogin();
+  $('#startupLoginModal').onclick = event => { if (event.target.id === 'startupLoginModal') dismissStartupLoginReminder(); };
+}
 
 async function checkLogin(retried) {
+  const ticket = ++loginCheckSequence;
   const av = $('#avatarImg');
   let st;
+  let loginTimeout;
   try {
-    st = await B.loginState();
+    st = await Promise.race([B.loginState(), new Promise(resolve => { loginTimeout = setTimeout(() => resolve({ logged: false, stale: true }), 18000); })]);
   } catch (e) {
     st = { logged: false, stale: true };
-  }
+  } finally { clearTimeout(loginTimeout); }
+  if (!st || typeof st.logged !== 'boolean') st = { logged: false, stale: true };
+  if (ticket !== loginCheckSequence) return;
   if (st.logged) {
     av.onerror = () => { av.onerror = null; av.src = LOGO_SRC; };
     av.src = st.face || LOGO_SRC;
     av.title = (st.name || '已登录') + ' · 点按打开账号菜单';
     accountState = { logged: true, st };
+    dismissStartupLoginReminder();
   } else if (st.stale) {
     av.src = LOGO_SRC;
     av.title = st.saved ? '已登录（网络波动，状态稍后恢复）' : '登录状态检查失败 · 点按重试';
-    accountState = { logged: false, stale: true };
+    accountState = { logged: false, stale: true, st };
+    startupLoginPending = false;
+    if (!$('#startupLoginModal').hidden) dismissStartupLoginReminder();
     // 网络波动导致的检查失败，10 秒后自动重试一次
     if (!retried) setTimeout(() => { if (accountState.stale) checkLogin(true); }, 10000);
   } else {
     av.src = LOGO_SRC;
     av.title = '未登录 · 点按登录';
     accountState = { logged: false };
+    if (startupLoginEligible) { startupLoginPending = true; scheduleStartupLoginReminder(); }
   }
 }
 
@@ -200,9 +244,10 @@ function openAccountMenu() {
     head.innerHTML = `<img src="${esc(st.face || '')}" />
       <div><div class="h-name">${esc(st.name || '已登录')}</div><div class="h-sub">B 站等级 Lv${st.level ?? '-'}</div></div>`;
   } else if (accountState.stale) {
+    const st = accountState.st || {};
     head.innerHTML = `<img class="logo-avatar" src="${LOGO_SRC}" alt="" />
       <div><div class="h-name">${st.saved ? '已登录（网络波动）' : '登录状态检查失败'}</div>
-      <div class="h-sub">${st.saved ? '凭据有效，稍后自动恢复' : '网络或接口暂时不可用'}</div></div>`;
+      <div class="h-sub">${st.saved ? '本地登录信息已保留，稍后重试' : '网络或接口暂时不可用'}</div></div>`;
   } else {
     head.innerHTML = `<img class="logo-avatar" src="${LOGO_SRC}" alt="" />
       <div><div class="h-name">未登录</div><div class="h-sub">登录后可解锁更高音质</div></div>`;
@@ -323,6 +368,7 @@ function applySplitResult(f, item, r) {
 function hotToItem(r) {
   return {
     bvid: r.bvid, cid: r.cid || 0, page: 1, title: r.title, vtitle: r.title,
+    partsCount: r.partsCount,
     up: r.author || '', cover: r.pic || '', duration: durSec(r.duration),
   };
 }
@@ -493,7 +539,7 @@ function renderFolders() {
 function rowHtml(it, i, extra) {
   const pg = +it.page || 1;
   // 多 P 视频的分 P 条目：标题前带 P 号徽标，悬浮提示所属视频（分歌切出的曲目不是分 P，不带）
-  const badge = !it.split && (pg > 1 || (it.vtitle && it.vtitle !== it.title)) ? `<span class="ptag">P${pg}</span>` : '';
+  const badge = LibraryModel.isVideoPart(it) ? `<span class="ptag">P${pg}</span>` : '';
   return `<div class="row ${extra || ''} ${i === S.cur ? 'on' : ''}" data-i="${i}" title="${esc(it.vtitle || it.title)}">
     ${librarySelecting ? `<input class="song-check" type="checkbox" aria-label="选择 ${esc(it.title)}" ${librarySelection.has(itemKey(it)) ? 'checked' : ''} />` : ''}
     <img src="${esc(itemCover(it))}" data-fallback="${esc(it.cover || '')}" loading="lazy" />
@@ -661,6 +707,7 @@ function renderList() {
           { label: collapsed.has(bid) ? '展开全部 P' : '收起', action: () => toggleCollapsed(bid) },
           { label: '播放', action: () => playIndex(start) },
           { label: '选择歌曲下载…', action: () => openDownloadPicker(f.items.slice(start, start + cnt), f.items[start].vtitle || f.name) },
+          ...(!f.items[start].split ? [{ label: '解析整组歌曲信息', action: () => parseSongMetadata(f.items.slice(start, start + cnt)) }] : []),
           ...(f.items[start].split ? [{ label: '恢复整段…', action: () => restoreWholeVideo(f, f.items[start]) }] : []),
           { label: '在浏览器打开 B 站页面', action: () => B.openExternal('https://www.bilibili.com/video/' + bid) },
           { label: '复制视频链接', action: () => { B.copyText('https://www.bilibili.com/video/' + bid); toast('链接已复制'); } },
@@ -684,6 +731,7 @@ function renderList() {
         { label: '下载（最高可用音质）', action: () => requestDownloads([it]) },
         { label: '下一首播放', action: () => addNext([it]) },
         { label: '编辑歌曲信息…', action: () => editSongInfo(it) },
+        ...(!it.split ? [{ label: '解析歌曲信息', action: () => parseSongMetadata([it]) }] : []),
         ...(it.split ? [{ label: '恢复整段…', action: () => restoreWholeVideo(f, it) }] : []),
         ...(!it.split && canSplitItem(it) ? [{ label: '智能分歌…', action: () => maybeSplit(f, it) }] : []),
         { label: '加入待播队列', action: () => qToastAdd([it]) },
@@ -947,6 +995,7 @@ function pmEntries() {
       name: ep.title || ('第 ' + (i + 1) + ' 集'),
       duration: ep.duration || 0,
       bvid: ep.bvid, cid: ep.cid, page: ep.page || 1,
+      partsCount: ep.partsCount,
       cover: ep.cover || pmMeta.cover, up: ep.up || pmMeta.up,
       vtitle: pmMeta.season.title,
     }));
@@ -957,6 +1006,7 @@ function pmEntries() {
     no: 'P' + p.page,
     name: multi ? p.part || ('P' + p.page) : pmMeta.title,
     partTitle: multi ? p.part || '' : '',
+    partsCount: (pmMeta.parts || []).length,
     duration: p.duration || 0,
     bvid: pmMeta.bvid, cid: p.cid, page: p.page,
     cover: p.cover || pmMeta.cover, up: pmMeta.up,
@@ -1053,6 +1103,7 @@ async function pmCommit(action) {
     .map((e) => ({
       bvid: e.bvid, cid: e.cid, page: e.page,
       title: e.name, vtitle: e.vtitle || e.name, partTitle: e.partTitle || '',
+      partsCount: e.partsCount,
       up: e.up, cover: e.cover, duration: e.duration,
     }));
   if (action === 'download') { closePartsPicker(); await requestDownloads(all); return; }
@@ -1185,6 +1236,7 @@ async function addToFolder(r) {
     if ((meta.parts || []).length > 1) return openPartsPicker(meta, { only: r.page || 0 });
     await saveItemsToFolder([{
       bvid: meta.bvid, cid: meta.cid, page: 1, title: meta.title, vtitle: meta.title,
+      partsCount: Math.max(1, (meta.parts || []).length),
       up: meta.up, cover: meta.cover, duration: meta.duration,
     }], { description: meta.desc });
   } catch (e) {
@@ -1202,6 +1254,7 @@ async function playSearchItem(r) {
     // 单 P：只进待播队列，不动歌单
     loadQueue([{
       bvid: meta.bvid, cid: meta.cid, page: 1, title: meta.title, vtitle: meta.title,
+      partsCount: Math.max(1, (meta.parts || []).length),
       up: meta.up, cover: meta.cover, duration: meta.duration,
     }], 0);
     await playQueueAt(0);
@@ -1349,7 +1402,8 @@ function renderQueue() {
       el.oncontextmenu = event => {
         event.preventDefault();
         const item = S.queue[+el.dataset.i];
-        if (item) showCtxMenu(event.clientX, event.clientY, [{ label: '编辑歌曲信息…', action: () => editSongInfo(item) }]);
+        if (item) showCtxMenu(event.clientX, event.clientY, [{ label: '编辑歌曲信息…', action: () => editSongInfo(item) },
+          ...(!item.split ? [{ label: '解析歌曲信息', action: () => parseSongMetadata([item]) }] : [])]);
       };
       el.onclick = (e) => {
         if (e.target.dataset.x !== undefined) {
@@ -1474,6 +1528,7 @@ async function ensureCid(it) {
   const pg = +it.page || 1;
   const p = (meta.parts || []).find((x) => +x.page === pg);
   it.cid = (p && p.cid) || meta.cid;
+  it.partsCount = Math.max(1, (meta.parts || []).length);
   it.cover = meta.cover; // 统一用视频主封面，与首页一致
   if (!it.split && !it.identifySource && p && p.part) it.title = p.part;
   if (!it.up) it.up = meta.up;
@@ -1494,6 +1549,7 @@ async function migrateOldPartItems() {
         if (it.bvid !== bvid || !needsMetaFix(it)) return;
         const p = (meta.parts || []).find((x) => +x.page === (+it.page || 1));
         it.cid = (p && p.cid) || meta.cid;
+        it.partsCount = Math.max(1, (meta.parts || []).length);
         it.cover = meta.cover;
         if (!it.split && !it.identifySource && p && p.part) it.title = p.part;
         if (!it.up) it.up = meta.up;
@@ -1632,6 +1688,7 @@ function step(d) {
 // ---------------------------------------------------------------- 登录
 let pollTimer;
 async function openLogin() {
+  dismissStartupLoginReminder();
   $('#loginModal').hidden = false;
   $('#qrTip').textContent = '正在生成二维码…';
   $('#qr').removeAttribute('src');
@@ -2020,6 +2077,17 @@ $('#quality').onclick = () => {
 };
 
 document.onkeydown = (e) => {
+  if (!$('#startupLoginModal').hidden) {
+    if (e.key === 'Escape') { e.preventDefault(); dismissStartupLoginReminder(); }
+    if (e.key === 'Tab') {
+      const controls = [...$('#startupLoginModal').querySelectorAll('button')].filter(el => !el.disabled);
+      const index = controls.indexOf(document.activeElement);
+      if (index < 0 || (e.shiftKey ? index === 0 : index === controls.length - 1)) {
+        e.preventDefault(); controls[e.shiftKey ? controls.length - 1 : 0].focus();
+      }
+    }
+    return;
+  }
   if (!$('#downloadLoginModal').hidden || !$('#downloadPickerModal').hidden) return;
   if (!$('#editModal').hidden || !$('#reviewModal').hidden) return;
   if (!$('#addModal').hidden) {
@@ -2086,6 +2154,7 @@ async function selfTest() {
 mark('init 调用前');
 initWorkflows();
 initDownloads();
+initStartupLoginReminder();
 init();
 async function afterInit() {
   await initDiag();

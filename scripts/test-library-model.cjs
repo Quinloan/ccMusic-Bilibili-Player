@@ -20,4 +20,10 @@ const artwork = model.importedFolders({ folders: [{ name: '封面', items: [{ bv
 assert.equal(artwork.songCover, 'https://p1.music.126.net/album.jpg'); assert.equal(artwork.neteaseId, '347230');
 assert.equal(model.songCoverUrl('http://p1.music.126.net/album.jpg'), 'https://p1.music.126.net/album.jpg');
 for (const unsafe of ['javascript:alert(1)', 'file:///secret.jpg', 'data:image/png;base64,abc', 'https://user:password@example.com/cover']) assert.equal(model.songCoverUrl(unsafe), '');
-console.log('PASS: complete nonoverlapping review, manual cut/merge, import validation and credential exclusion');
+assert.equal(model.isVideoPart({ title: '坏女孩', vtitle: '徐良&小凌《坏女孩》', page: 1 }), false);
+assert.equal(model.isVideoPart({ page: 1, partsCount: 2 }), true);
+assert.equal(model.isVideoPart({ page: 1, partTitle: '01 坏女孩' }), true);
+assert.equal(model.isVideoPart({ page: 1, partsCount: 1, partTitle: '旧标题' }), false);
+assert.equal(model.isVideoPart({ page: 2 }), true);
+assert.equal(model.isVideoPart({ split: true, page: 1, partsCount: 2, partTitle: '单曲' }), false);
+console.log('PASS: complete nonoverlapping review, manual cut/merge, import validation, actual multi-P facts and credential exclusion');

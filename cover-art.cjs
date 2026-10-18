@@ -2,7 +2,7 @@
 const fs = require('node:fs'), path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { encodeRequest } = require('./netease-lyrics.cjs');
-const { songCoverUrl, songTitleIntent } = require('./renderer/library-model.js');
+const { songCoverUrl, songTitleIntent, createMetadataQueue } = require('./renderer/library-model.js');
 const simplify = require('opencc-js').Converter({ from: 'tw', to: 'cn' });
 const normalize = value => simplify(String(value || '').normalize('NFKC').toLowerCase()).replace(/[^\p{L}\p{N}]/gu, '');
 // Versions are part of the recording identity. Never erase “治愈版”, Live, etc.
@@ -19,10 +19,11 @@ function sameSong(match, name, artist) {
   if (!match.artist) return true;
   return sameArtists(match.artist, artist);
 }
-function createArtworkResolver({ request = fetch, dispatcher, cacheFile, now = Date.now, interval = 500 } = {}) {
+function createArtworkResolver({ request = fetch, dispatcher, cacheFile, now = Date.now, interval = 500, timeout = 12000 } = {}) {
   const cache = new Map(), pending = new Map();
   const deviceId = randomUUID();
-  let tail = Promise.resolve(), nextAt = 0, blockedNetease = 0, blockedQQ = 0;
+  const queue = createMetadataQueue({ concurrency: 2, timeout, interval });
+  let blockedNetease = 0, blockedQQ = 0;
   if (cacheFile) try {
     if (fs.statSync(cacheFile).size <= 2 * 1024 * 1024) {
       const stored = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
@@ -135,13 +136,11 @@ function createArtworkResolver({ request = fetch, dispatcher, cacheFile, now = D
   function resolveTitle(input = {}) {
     const intent = songTitleIntent(input);
     if (!intent) return Promise.resolve(null);
-    const key = 'title:v2:' + normalize(input.title) + '|' + normalize(input.parentTitle);
-    if (cache.get(key)?.expires > now()) return Promise.resolve(cache.get(key).song || (intent.fallback ? { ...intent.fallback, matched: false } : null));
-    if (pending.has(key)) return pending.get(key);
+    const key = `title:v${intent.metadataVersion || 2}:` + normalize(input.title) + '|' + normalize(input.parentTitle);
+    if (!input.refresh && cache.get(key)?.expires > now()) return Promise.resolve(cache.get(key).song || (intent.fallback ? { ...intent.fallback, matched: false } : null));
+    if (pending.has(key)) { pending.get(key).promote(input.refresh ? 10 : Number(input.priority) || 0); return pending.get(key); }
     if (pending.size >= 200) return Promise.resolve(null);
-    const job = tail.then(async () => {
-      await require('node:timers/promises').setTimeout(Math.max(0, nextAt - now()));
-      const signal = AbortSignal.timeout(12000);
+    const work = queue.add(async signal => {
       const data = await netease('/api/cloudsearch/pc', { s: intent.query, type: 1, limit: 8, offset: 0, total: true }, signal);
       let song = titleMatch(intent, (data?.result?.songs || []).map(song => ({ name: song.name, artist: (song.ar || song.artists || []).map(a => a.name).join('/'),
         album: song.al?.name || song.album?.name || '', neteaseId: String(song.id || ''), cover: neteaseCover(song) })));
@@ -149,15 +148,15 @@ function createArtworkResolver({ request = fetch, dispatcher, cacheFile, now = D
         const other = titleMatch(intent, await searchQQ(intent.query, signal, intent));
         if (other) song = song && sameSong(song, other.name, other.artist) ? { ...song, cover: other.cover || '' } : other;
       }
-      nextAt = now() + interval;
+      if (signal.aborted) return null;
       const result = song ? { ...song, matched: true } : intent.fallback ? { ...intent.fallback, matched: false } : null;
       remember(key, song?.cover || '', song ? result : undefined);
       return result;
-    }).catch(() => null).finally(() => pending.delete(key));
-    tail = job; pending.set(key, job); return job;
+    }, input.refresh ? 10 : Number(input.priority) || 0);
+    const job = work.finally(() => pending.delete(key)); job.promote = work.promote;
+    pending.set(key, job); return job;
   }
-  async function lookup(match) {
-    const signal = AbortSignal.timeout(12000);
+  async function lookup(match, signal) {
     const intent = { raw: match.name, candidates: [match], parentArtist: match.artist };
     if (match.neteaseId) {
       const data = await netease('/api/v3/song/detail', { c: JSON.stringify([{ id: match.neteaseId }]) }, signal);
@@ -182,11 +181,13 @@ function createArtworkResolver({ request = fetch, dispatcher, cacheFile, now = D
     if (cache.get(key)?.expires > now()) return Promise.resolve(cache.get(key).url);
     if (pending.has(key)) return pending.get(key);
     if (pending.size >= 200) return Promise.resolve('');
-    const job = tail.then(async () => {
-      await require('node:timers/promises').setTimeout(Math.max(0, nextAt - now()));
-      const url = await lookup(match); nextAt = now() + interval; remember(key, url); return url;
-    }).catch(() => '').finally(() => pending.delete(key));
-    tail = job; pending.set(key, job); return job;
+    const work = queue.add(async signal => {
+      const url = await lookup(match, signal);
+      if (signal.aborted) return '';
+      remember(key, url); return url;
+    }, 1);
+    const job = work.then(url => url || '').finally(() => pending.delete(key)); job.promote = work.promote;
+    pending.set(key, job); return job;
   }
   return { resolve, resolveTitle };
 }

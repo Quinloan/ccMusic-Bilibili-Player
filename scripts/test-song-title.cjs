@@ -28,6 +28,10 @@ async function run() {
     assert.equal(fallback.name, '七里香'); assert.equal(fallback.neteaseId, '5'); assert(fallback.cover.includes('gtimg.cn'), 'QQ fills missing NetEase artwork without changing song identity');
     const reopened = createArtworkResolver({ cacheFile: file, interval: 0, request: async () => { throw Error('cache should prevent network'); } });
     assert.deepEqual(await reopened.resolveTitle(original), a);
+    catalog.push(song(6, '坏女孩', '徐良/小凌'), song(7, '坏女孩 (Live)', '无关翻唱'));
+    const badGirl = await resolver.resolveTitle({ title: '在百万豪装录音棚大声听 徐良&小凌《坏女孩》【Hi-res】' });
+    assert.equal(badGirl.name, '坏女孩'); assert.equal(badGirl.artist, '徐良/小凌'); assert.equal(badGirl.matched, true);
+    assert.equal(await resolver.resolveTitle({ title: '你 我 怎 么 两 清' }), null, 'a lyrical caption cannot be mapped to an unrelated original artist');
     const before = count; assert.equal(await resolver.resolveTitle({ title: '周杰伦歌曲合集' }), null); assert.equal(count, before, 'collections never become their first song');
     assert.equal(await resolver.resolveTitle({ title: '未知标题-no matching singer' }), null, 'uncertain titles remain unchanged');
     const offline = createArtworkResolver({ interval: 0, request: async () => { throw Error('offline'); } });

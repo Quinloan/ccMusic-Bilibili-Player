@@ -2,8 +2,9 @@
 const fs = require('node:fs'), path = require('node:path'), assert = require('node:assert/strict');
 const root = path.resolve(__dirname, '..');
 const runtime = process.env.CCMUSIC_PLAYWRIGHT || 'playwright';
-function mockBridge() {
+function mockBridge(options = {}) {
   localStorage.autoCheck = '0';
+  if (!options.startupLoginReminder) localStorage.startupLoginReminder = '0';
   window.testLibrary = JSON.parse(localStorage.mockLibrary || 'null') || { folders: [{ id: 'a', name: '我的歌单', items: [] }, { id: 'b', name: '欧美收藏', items: [] }], active: 'a' };
   window.testSplitDelay = 10; window.testSplitCalls = 0;
   let progress; const cancelled = new Set(); window.testRecognitionRequests = [];

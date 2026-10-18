@@ -43,7 +43,7 @@ async function run() {
       save(); renderList(); renderQueue();
     });
     for (let i = 0; i < 5; i++) {
-      await page.waitForFunction(n => window.testTitleRequests.length === n, i + 2);
+      await page.waitForFunction(n => window.testTitleRequests.length >= n, i + 2);
       const input = await page.evaluate(n => window.testTitleRequests[n].input, i + 1);
       assert.equal(input.parentTitle, 'R&B陶喆热门歌曲合集【52分钟精选】');
       await page.evaluate(n => { const job = window.testTitleRequests[n], name = job.input.title.replace(/[《》]/g, ''); job.resolve({ name, artist: '陶喆', neteaseId: String(150000 + n), cover: `https://art.test/tao-${n}.png`, matched: true }); }, i + 1);
@@ -66,7 +66,7 @@ async function run() {
       window.descriptionTask = { id: 'desc-task', item, folder: f, batch, result: { tracks, duration: 480 }, state: 'ready' };
       splitTasks.set(descriptionTask.id, descriptionTask); await runRecognitionTask(descriptionTask);
     });
-    await page.waitForFunction(() => window.testTitleRequests.length === 7);
+    await page.waitForFunction(() => window.testTitleRequests.length >= 7);
     await page.evaluate(() => window.testTitleRequests[6].resolve({ name: '普通朋友', artist: '陶喆', cover: 'https://art.test/new-tao.png', matched: true }));
     await page.waitForFunction(() => window.testTitleRequests.length === 8);
     // Manual edit while the second lookup waits always wins.

@@ -4,41 +4,59 @@ const taskDismissTimers = new Map();
 const TASK_DONE_VISIBLE_MS = 5000;
 const coverRequests = new Map();
 const titleRequests = new Map();
-let titleRequestTurn = Promise.resolve();
-function needsSongTitle(item) {
-  if (!item || item.titleMetaVersion === 2 || item.identifySource === 'manual') return false;
+const metadataQueue = LibraryModel.createMetadataQueue({ concurrency: 2, timeout: 25000 });
+// Cache provider work, but apply its result once to each new live item instance.
+// A removed/re-added song has the same key and a different object.
+function consumeMetadata(entry, item, apply) {
+  if (!entry.consumers.has(item)) entry.consumers.set(item, entry.promise.then(apply).catch(() => null));
+  return entry.consumers.get(item);
+}
+function needsSongTitle(item, force = false) {
+  if (!item || item.identifySource === 'manual') return false;
   if (item.split ? item.identifySource !== 'description' : (item.identifySource && item.identifySource !== 'title')) return false;
   const part = item.partTitle || (+item.page || 1) > 1 || (item.vtitle && item.vtitle !== (item.sourceTitle || item.title));
   const duration = LibraryModel.duration(item.duration);
   if (!item.split && !part && (!(duration > 0) || duration >= 600)) return false;
-  return !!LibraryModel.songTitleIntent({ title: item.sourceTitle || item.partTitle || item.title, parentTitle: part ? item.vtitle : '' });
+  const intent = LibraryModel.songTitleIntent({ title: item.sourceTitle || item.partTitle || item.title, parentTitle: part ? item.vtitle : '' });
+  return !!intent && (force || item.titleMetaVersion !== (intent.metadataVersion || 2));
 }
-function requestSongTitle(item) {
-  if (!needsSongTitle(item)) return Promise.resolve(null);
+function requestSongTitle(item, options = {}) {
+  if (!needsSongTitle(item, !!options.force)) return Promise.resolve(null);
   const input = { title: item.sourceTitle || item.partTitle || item.title,
     parentTitle: item.vtitle !== (item.sourceTitle || item.title) ? item.vtitle || '' : '' };
   const key = itemKey(item), token = input.title + '|' + input.parentTitle;
-  const old = titleRequests.get(key);
-  if (old?.token === token && Date.now() - old.at < 15 * 60000) return old.promise;
-  const entry = { token, at: Date.now() };
-  entry.promise = titleRequestTurn.then(async () => {
-    const live = [...S.folders.flatMap(f => f.items), ...S.queue].find(candidate => itemKey(candidate) === key && needsSongTitle(candidate));
-    if (!live || titleRequests.get(key) !== entry) return null;
-    const result = await B.resolveSongTitle(input);
+  let entry = titleRequests.get(key);
+  if (entry?.token !== token || Date.now() - entry.at >= 15 * 60000 || (options.force && entry.settled) ||
+    (entry.settled && (entry.skipped || (!entry.result?.name && !entry.consumers.has(item))))) {
+    entry = { token, force: !!options.force, at: Date.now(), consumers: new WeakMap(), applied: new WeakSet() };
+    entry.work = metadataQueue.add(async () => {
+      const live = [...S.folders.flatMap(f => f.items), ...S.queue].find(candidate => itemKey(candidate) === key && needsSongTitle(candidate, entry.force));
+      if (!live || titleRequests.get(key) !== entry) { entry.skipped = true; return null; }
+      return B.resolveSongTitle({ ...input, ...(entry.force ? { refresh: true, priority: 10 } : {}) });
+    }, options.force ? 10 : options.priority || 0);
+    entry.promise = entry.work.then(result => { entry.result = result; entry.settled = true; return result; });
+    titleRequests.delete(key); titleRequests.set(key, entry);
+    while (titleRequests.size > 2000) titleRequests.delete(titleRequests.keys().next().value);
+  }
+  if (options.force) entry.force = true;
+  entry.work.promote(options.force ? 10 : options.priority || 0);
+  return consumeMetadata(entry, item, result => {
     if (!result?.name || titleRequests.get(key) !== entry) return null;
     const targets = new Set([...S.folders.flatMap(f => f.items), ...S.queue, playback.current?.item, playback.requested?.item]
       .filter(candidate => candidate && !!candidate.split === !!item.split && itemKey(candidate) === key &&
-        (candidate.identifySource === 'manual' || needsSongTitle(candidate))));
+        !entry.applied.has(candidate) && (candidate.identifySource === 'manual' || needsSongTitle(candidate, entry.force))));
     let changed = false;
     for (const candidate of targets) {
       if (candidate.identifySource !== 'manual' && (candidate.sourceTitle || candidate.partTitle || candidate.title) !== input.title) continue;
+      if (!result.matched && candidate.titleMetaVersion >= 2) continue;
+      entry.applied.add(candidate);
       if (candidate.identifySource !== 'manual') {
         candidate.sourceTitle = input.title;
         candidate.title = String(result.name).trim().slice(0, 500);
         candidate.artist = String(result.artist || '').slice(0, 300);
         if (candidate.identifySource !== 'description') candidate.identifySource = 'title';
         delete candidate.neteaseId; delete candidate.songCover; delete candidate.titleMetaVersion;
-        if (result.matched) candidate.titleMetaVersion = 2;
+        if (result.matched) candidate.titleMetaVersion = LibraryModel.songTitleIntent(input)?.metadataVersion || 2;
         changed = true;
       }
       // Invalidate an older cover-only request before replacing the identity.
@@ -55,13 +73,37 @@ function requestSongTitle(item) {
       save(); renderList(); renderQueue(); refreshSongCoverImages();
     }
     return result;
-  }).catch(() => null);
-  titleRequests.delete(key); titleRequests.set(key, entry);
-  while (titleRequests.size > 2000) titleRequests.delete(titleRequests.keys().next().value);
-  titleRequestTurn = entry.promise;
-  return entry.promise;
+  });
 }
 function queueSongTitles(items) { items.forEach(item => requestSongTitle(item)); }
+const metadataParseJobs = new Map();
+function parseSongMetadata(items) {
+  const unique = [...new Map(items.map(item => [itemKey(item), item])).values()];
+  const eligible = unique.filter(item => needsSongTitle(item, true));
+  if (!eligible.length) { toast(unique.some(item => item.identifySource === 'manual') ? '已保留手动修改的歌曲信息' : '没有明确的单曲标题可供解析'); return Promise.resolve(); }
+  const key = eligible.map(itemKey).sort().join('|');
+  if (metadataParseJobs.has(key)) { $('#tasksPanel').hidden = false; toast('这些歌曲正在解析中'); return metadataParseJobs.get(key); }
+  toast(`正在解析 ${eligible.length} 首，匹配后逐首更新`);
+  const job = (async () => {
+    let matched = 0, missed = 0;
+    for (const item of eligible) {
+      if (![...S.folders.flatMap(f => f.items), ...S.queue].includes(item) || item.identifySource === 'manual') { job.progress.done++; renderTasks(); continue; }
+      const result = await requestSongTitle(item, { force: true });
+      job.progress.done++; renderTasks();
+      if (item.identifySource === 'manual' || ![...S.folders.flatMap(f => f.items), ...S.queue].includes(item)) continue;
+      if (result?.matched) matched++; else missed++;
+    }
+    toast(`解析完成，匹配 ${matched} 首${missed ? `，${missed} 首暂未匹配` : ''}`);
+    return { matched, missed };
+  })().finally(() => {
+    metadataParseJobs.delete(key); renderTasks();
+    if (!metadataParseJobs.size && !splitTasks.size) $('#tasksPanel').hidden = true;
+  });
+  job.progress = { done: 0, total: eligible.length, title: eligible[0].vtitle || eligible[0].title };
+  metadataParseJobs.set(key, job);
+  $('#downloadsPanel').hidden = true; $('#queuePanel').hidden = true; $('#tasksPanel').hidden = false;
+  renderTasks(); return job;
+}
 let coverScanFrame = null;
 const itemCover = item => LibraryModel.songCoverUrl(item?.songCover) || item?.cover || '';
 function setSongCover(image, item) {
@@ -80,27 +122,30 @@ function refreshSongCoverImages() {
 }
 function requestSongCover(item, match) {
   if (!item) return Promise.resolve('');
-  if (!match && needsSongTitle(item)) { requestSongTitle(item); return Promise.resolve(''); }
+  if (!match && needsSongTitle(item)) { requestSongTitle(item, { priority: 1 }); return Promise.resolve(''); }
   if (LibraryModel.songCoverUrl(item.songCover)) return Promise.resolve(item.songCover);
   if (!match && !item.neteaseId && !['netease', 'shazam', 'lyrics', 'description', 'title'].includes(item.identifySource)) return Promise.resolve('');
   const input = match || { name: item.title, artist: item.artist || item.referenceArtist || '', neteaseId: item.neteaseId };
   const key = itemKey(item), token = input.neteaseId || `${input.name}|${input.artist}`;
-  const old = coverRequests.get(key);
-  if (old?.token === token && Date.now() - old.at < 15 * 60000) return old.promise;
-  const entry = { token, at: Date.now() };
-  entry.promise = Promise.resolve().then(() => B.songCover(input)).then(value => {
+  let entry = coverRequests.get(key);
+  if (entry?.token !== token || Date.now() - entry.at >= 15 * 60000 ||
+    (entry.settled && !entry.result && !entry.consumers.has(item))) {
+    entry = { token, at: Date.now(), consumers: new WeakMap(), applied: new WeakSet() };
+    entry.promise = metadataQueue.add(() => B.songCover(input), 1).catch(() => '')
+      .then(result => { entry.result = result; entry.settled = true; return result; });
+    coverRequests.delete(key); coverRequests.set(key, entry);
+    while (coverRequests.size > 2000) coverRequests.delete(coverRequests.keys().next().value);
+  }
+  return consumeMetadata(entry, item, value => {
     const url = LibraryModel.songCoverUrl(value);
     if (!url || coverRequests.get(key) !== entry) return '';
     // Look up live items, never reinsert an item removed or undone during lookup.
     const targets = new Set([...S.folders.flatMap(f => f.items), ...S.queue, playback.current?.item, playback.requested?.item]
-      .filter(candidate => candidate && itemKey(candidate) === key));
-    for (const candidate of targets) candidate.songCover = url;
+      .filter(candidate => candidate && itemKey(candidate) === key && !entry.applied.has(candidate)));
+    for (const candidate of targets) { candidate.songCover = url; entry.applied.add(candidate); }
     if (targets.size) { save(); refreshSongCoverImages(); }
     return url;
-  }).catch(() => '');
-  coverRequests.delete(key); coverRequests.set(key, entry);
-  while (coverRequests.size > 2000) coverRequests.delete(coverRequests.keys().next().value);
-  return entry.promise;
+  });
 }
 function scheduleVisibleSongCovers() {
   if (coverScanFrame !== null) return;
@@ -219,7 +264,7 @@ function applyRecognizedTrack(task, index, track) {
   const keyMatches = item => item?.splitBatch === task.batch && item.startSec === track.start && item.endSec === track.end;
   // A user edit wins even if it was made while this request was in flight.
   const targets = new Set([...S.folders.flatMap(f => f.items), ...S.queue, playback.current?.item, playback.requested?.item].filter(keyMatches));
-  for (const item of targets) if (item.identifySource !== 'manual' && !(item.titleMetaVersion === 2 && track.source === 'description' && item.sourceTitle === track.title)) Object.assign(item, {
+  for (const item of targets) if (item.identifySource !== 'manual' && !(item.titleMetaVersion >= 2 && track.source === 'description' && item.sourceTitle === track.title)) Object.assign(item, {
     title: track.title, artist: track.artist || '', identifySource: track.source || '', referenceArtist: track.referenceArtist || '',
   });
   const cover = LibraryModel.songCoverUrl(track.songCover);
@@ -297,7 +342,7 @@ function dismissSplitTask(task, automatic = false) {
   pendingSplitReviews.delete(task.id);
   if (task.result?.sessionId) B.splitRelease(task.result.sessionId).catch(() => {});
   renderTasks();
-  if (automatic && !splitTasks.size) $('#tasksPanel').hidden = true;
+  if (automatic && !splitTasks.size && !metadataParseJobs.size) $('#tasksPanel').hidden = true;
 }
 function notifySplitReady(task) {
   dismissTaskNotice(task.id);
@@ -331,10 +376,11 @@ function renderTasks() {
   for (const task of list) if (task.state === 'done' && !taskDismissTimers.has(task.id)) {
     taskDismissTimers.set(task.id, setTimeout(() => dismissSplitTask(task, true), TASK_DONE_VISIBLE_MS));
   }
-  const state = list.some(task => task.state === 'error') ? 'error' : list.some(task => task.state === 'ready') ? 'attention' : list.some(task => task.state === 'running') ? 'running' : 'idle';
-  setActivityIndicator('#taskBtn', state, '分歌任务');
-  $('#taskEmpty').hidden = !!list.length;
-  $('#taskList').innerHTML = list.map(task => {
+  const state = list.some(task => task.state === 'error') ? 'error' : list.some(task => task.state === 'ready') ? 'attention' : list.some(task => task.state === 'running') || metadataParseJobs.size ? 'running' : 'idle';
+  setActivityIndicator('#taskBtn', state, '后台任务');
+  $('#taskEmpty').hidden = !!(list.length || metadataParseJobs.size);
+  const metadataCards = [...metadataParseJobs.values()].map(job => `<div class="task-card"><strong>${esc(job.progress.title)}</strong><small>正在解析歌曲信息 ${job.progress.done}/${job.progress.total}</small><progress max="${job.progress.total}" value="${job.progress.done}"></progress></div>`).join('');
+  $('#taskList').innerHTML = metadataCards + list.map(task => {
     const p = task.progress || {};
     const status = task.state === 'ready' ? `${task.result.tracks.length} 首待加入`
       : task.state === 'done' ? '识曲完成' : task.state === 'error' ? task.error : task.state === 'cancelled' ? (task.batch ? '识曲已停止，已加入的曲目保留' : '已取消，原曲目保留')

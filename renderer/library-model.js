@@ -2,6 +2,8 @@
 (function (root) {
   const duration = value => typeof value === 'string' && value.includes(':')
     ? value.split(':').reduce((n, part) => n * 60 + Number(part), 0) : Number(value);
+  const isVideoPart = item => !!item && !item.split && ((+item.page || 1) > 1 || Number(item.partsCount) > 1 ||
+    (Number(item.partsCount) !== 1 && !!item.partTitle));
   function songCoverUrl(value) {
     if (typeof value !== 'string' || value.length > 2000) return '';
     try {
@@ -22,16 +24,41 @@
     const raw = clean(input.title);
     if (!raw || /^(?:p?\d+|正片|完整版|视频|高清版本?|曲目\s*\d+(?:[（(].*[）)])?)$/i.test(raw)) return null;
     if (/合集|歌单|串烧|精选集|全专辑|专辑完整|playlist|full\s+album/i.test(raw)) return null;
-    let parentArtist = clean(input.parentTitle).replace(/[《「“][^》」”]*[》」”]/g, ' ')
+    const parentSource = String(input.parentTitle || '');
+    const parentLabelFree = parentSource.replace(/[【\[〖]([^】\]〗]*)[】\]〗]/g, (whole, label) => /B\s*站|bilibili|附\s*MV/i.test(label) ? ' ' : whole);
+    let parentArtist = clean(parentLabelFree).replace(/[《「“][^》」”]*[》」”]/g, ' ')
       .replace(/[（(][^）)]*[）)]/g, ' ')
       .replace(/\bR\s*&\s*B\b|\b(?:pop|hip\s*hop|rock|jazz)\b/gi, ' ')
       .replace(/\d+(?:\.\d+)?\s*(?:小时|分钟|分|小时版)|热门|热歌|金曲|精选/gi, ' ')
-      .replace(/歌曲全集|音乐全集|歌曲合集|音乐合集|全专辑|全歌曲|全部歌曲|热门歌曲|精选歌曲|歌曲精选|金曲精选|精选|全集|合集|合辑|专辑|音乐|歌曲|收录|大全|全辑|完整|\d+首/gi, '').trim();
-    if (!parentArtist || parentArtist.length > 45 || /[《》「」“”!?！？:：|]|华语|欧美|热门|流行|经典|歌单|串烧|推荐|盘点|放松|通勤|专注/.test(parentArtist)) parentArtist = '';
+      .replace(/录音室作品|录音室专辑|音乐作品|作品全集|作品合集|歌曲全集|音乐全集|歌曲合集|音乐合集|全专辑|全歌曲|全部歌曲|热门歌曲|精选歌曲|歌曲精选|金曲精选|精选|全集|合集|合辑|专辑|音乐|歌曲|收录|大全|全辑|完整|\d+首/gi, '').trim();
+    if (!parentArtist || parentArtist.length > 45 || /[《》「」“”!?！？:：|]|B站|华语|欧美|热门|流行|经典|歌单|串烧|推荐|盘点|放松|通勤|专注|翻唱|现场|演唱会|\bcover\b|\bAI\b/i.test(parentArtist)) parentArtist = '';
+    const versioned = /翻唱|现场|演唱会|伴奏|\b(?:cover|live|remix|AI)\b/i.test(raw + ' ' + parentSource);
+    if (input.parentTitle && /专辑/.test(raw) && /翻唱|伴奏|\b(?:cover|AI)\b/i.test(raw + ' ' + parentSource)) return null;
+    let albumPart = null, albumLabel = false;
+    // An explicit trailing album label is metadata, not part of the song name.
+    // Require the collection's artist; keep real colons and recording versions.
+    const labelled = input.parentTitle && parentArtist && raw.match(/^(.+?)\s+专辑\s*[:：]\s*([^:：]{1,80})$/);
+    if (labelled) { albumPart = { name: labelled[1].trim(), artist: parentArtist }; albumLabel = true; }
+    if (input.parentTitle && !versioned) {
+      const suffix = parentArtist && parentArtist + '同名专辑';
+      if (suffix && raw.endsWith(suffix) && raw.slice(0, -suffix.length).trim()) albumPart = { name: raw.slice(0, -suffix.length).trim(), artist: parentArtist };
+      if (!albumPart && parentArtist) {
+        const at = raw.lastIndexOf(' ' + parentArtist);
+        const album = at >= 0 ? raw.slice(at + 1 + parentArtist.length).trim() : '';
+        if (at > 0 && album.length <= 80 && /专辑$/.test(album)) albumPart = { name: raw.slice(0, at).trim(), artist: parentArtist };
+      }
+      if (!albumPart) {
+        const match = raw.match(/^(.+)\s+([\p{L}\p{N}][\p{L}\p{N}.&/、·-]{0,44})同名专辑$/u);
+        if (match && (!parentArtist || parentArtist === match[2])) albumPart = { name: match[1].trim(), artist: match[2] };
+      }
+      if (albumPart) albumPart.name = albumPart.name.replace(/^[《「“]([^》」”]+)[》」”]$/, '$1');
+    }
     const quoted = [...raw.matchAll(/[《「“]([^》」”]+)[》」”]/g)];
-    if (quoted.length > 1) return null;
+    if (quoted.length > 1 && (!albumPart || /[《「“]/.test(albumPart.name))) return null;
     let candidates, query, fallback = null;
-    if (quoted.length === 1) {
+    if (albumPart) {
+      candidates = [albumPart]; query = `${albumPart.name} ${albumPart.artist}`; fallback = { ...albumPart };
+    } else if (quoted.length === 1) {
       let name = quoted[0][1].trim();
       let artist = clean(raw.replace(quoted[0][0], ' '));
       artist = artist.replace(/[（(]([^）)]*)[）)]/g, (whole, text) => {
@@ -50,7 +77,8 @@
     }
     candidates = candidates.filter(c => c.name && c.name.length <= 100 && !/^\d+$/.test(c.name));
     if (!fallback && candidates.length === 1 && parentArtist) fallback = { ...candidates[0] };
-    return candidates.length ? { raw, candidates, query: query.slice(0, 240), fallback, parentArtist } : null;
+    const metadataVersion = albumLabel ? 4 : albumPart || (parentArtist && (parentLabelFree !== parentSource || /录音室作品|录音室专辑|音乐作品|作品全集|作品合集/.test(parentSource))) ? 3 : 2;
+    return candidates.length ? { raw, candidates, query: query.slice(0, 240), fallback, parentArtist, metadataVersion } : null;
   }
   function validateTracks(tracks, seconds) {
     if (!Array.isArray(tracks) || tracks.length < 2 || tracks.length > 1000) throw new Error('请保留至少两首曲目');
@@ -93,6 +121,7 @@
           vtitle: String(item.vtitle || '').slice(0, 500), up: String(item.up || '').slice(0, 200),
           cover: /^https?:\/\//i.test(item.cover || '') ? String(item.cover).slice(0, 2000) : '' };
         if (Number.isSafeInteger(Number(item.cid)) && Number(item.cid) > 0) clean.cid = Number(item.cid);
+        if (Number.isInteger(Number(item.partsCount)) && Number(item.partsCount) >= 1 && Number(item.partsCount) <= 10000) clean.partsCount = Number(item.partsCount);
         if (item.split) {
           if (![item.startSec, item.endSec].every(n => typeof n === 'number' && Number.isFinite(n)) || item.startSec < 0 || item.endSec <= item.startSec) throw new Error('分段时间无效');
           Object.assign(clean, { split: true, startSec: item.startSec, endSec: item.endSec, duration: item.endSec - item.startSec });
@@ -103,12 +132,46 @@
         if (artwork) clean.songCover = artwork;
         if (/^\d{1,20}$/.test(String(item.neteaseId || ''))) clean.neteaseId = String(item.neteaseId);
         for (const key of ['sourceTitle', 'partTitle']) if (typeof item[key] === 'string') clean[key] = item[key].slice(0, 500);
-        if ([1, 2].includes(item.titleMetaVersion)) clean.titleMetaVersion = item.titleMetaVersion;
+        if ([1, 2, 3, 4].includes(item.titleMetaVersion)) clean.titleMetaVersion = item.titleMetaVersion;
         return clean;
       }) };
     });
   }
-  const api = { duration, songCoverUrl, songTitleIntent, validateTracks, mergeTrack, cutTrack, importedFolders };
+  // Shared by renderer and provider: bounded work, promotable waiting requests,
+  // and a deadline even when an IPC/transport ignores AbortSignal.
+  function createMetadataQueue({ concurrency = 2, timeout = 15000, interval = 0 } = {}) {
+    const waiting = [];
+    let active = 0, nextAt = 0, wake = null, scheduled = false;
+    function schedule() {
+      if (scheduled) return;
+      scheduled = true;
+      queueMicrotask(() => { scheduled = false; pump(); });
+    }
+    function pump() {
+      if (active >= concurrency || !waiting.length) return;
+      const delay = nextAt - Date.now();
+      if (delay > 0) { if (wake === null) wake = setTimeout(() => { wake = null; pump(); }, delay); return; }
+      waiting.sort((a, b) => b.priority - a.priority);
+      const entry = waiting.shift(); entry.started = true; active++;
+      nextAt = Date.now() + interval;
+      const controller = new AbortController();
+      let timer;
+      const expired = new Promise(resolve => { timer = setTimeout(() => { controller.abort(); resolve(null); }, timeout); });
+      Promise.race([Promise.resolve().then(() => entry.run(controller.signal)), expired])
+        .catch(() => null).then(entry.resolve).finally(() => { clearTimeout(timer); active--; schedule(); });
+      schedule();
+    }
+    return {
+      add(run, priority = 0) {
+        const entry = { run, priority, started: false };
+        const promise = new Promise(resolve => { entry.resolve = resolve; });
+        promise.promote = value => { if (!entry.started) { entry.priority = Math.max(entry.priority, value); schedule(); } };
+        waiting.push(entry); schedule(); return promise;
+      },
+      get active() { return active; }, get waiting() { return waiting.length; },
+    };
+  }
+  const api = { duration, isVideoPart, songCoverUrl, songTitleIntent, validateTracks, mergeTrack, cutTrack, importedFolders, createMetadataQueue };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.LibraryModel = api;
 })(globalThis);

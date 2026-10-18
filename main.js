@@ -27,6 +27,7 @@ let ufetch = null;
 let agent = null;
 
 let cookies = {};   // buvid3/buvid4 + 登录态
+let cookiesLoaded = false;
 let wbi = null;
 let wbiAt = 0;
 
@@ -107,8 +108,7 @@ function signWbi(params) {
 }
 
 async function initSession() {
-  const saved = readStore();
-  if (saved && saved.cookies) cookies = Object.assign({}, saved.cookies);
+  loadCookies();
   // 设备指纹与 WBI 密钥互不依赖，并行取
   await Promise.all([
     apiGet(API, '/x/frontend/finger/spi').then((spi) => {
@@ -137,6 +137,7 @@ function netInit() {
 }
 
 async function ensureSession() {
+  loadCookies();
   await netInit();
   if (!sessionReady) {
     sessionReady = initSession().catch((e) => {
@@ -159,6 +160,7 @@ ipcMain.handle('store:get', () => {
   return s ? s.library || null : null;
 });
 ipcMain.handle('store:set', (_e, library) => {
+  loadCookies();
   const cur = readStore() || {};
   cur.library = library;
   cur.cookies = cookies;
@@ -166,10 +168,20 @@ ipcMain.handle('store:set', (_e, library) => {
   return true;
 });
 
+function loadCookies() {
+  if (cookiesLoaded) return;
+  const saved = readStore();
+  if (saved?.cookies) cookies = Object.assign({}, saved.cookies);
+  cookiesLoaded = true;
+}
 async function getLoginState() {
-  await ensureSession();
+  loadCookies();
   if (!cookies.SESSDATA) return { logged: false };
+  // Authentication does not depend on fingerprint/WBI initialization succeeding.
+  await netInit();
+  const sessionToken = cookies.SESSDATA;
   const nav = await apiGet(API, '/x/web-interface/nav', {}, AbortSignal.timeout(15000));
+  if (cookies.SESSDATA !== sessionToken) return { logged: false, stale: true, saved: !!cookies.SESSDATA };
   if (nav && nav.code === 0 && nav.data && nav.data.isLogin) {
     return {
       logged: true,
@@ -178,7 +190,7 @@ async function getLoginState() {
       level: nav.data.level_info ? nav.data.level_info.current_level : null,
     };
   }
-  if (nav && nav.code === 0) {
+  if (nav && (nav.code === -101 || (nav.code === 0 && nav.data?.isLogin === false))) {
     // B 站明确告知未登录，凭据确实失效了才清除
     delete cookies.SESSDATA;
     persistCookies();

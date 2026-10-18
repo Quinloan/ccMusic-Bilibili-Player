@@ -445,6 +445,13 @@ button.primary:hover { opacity: .9; color: #fff; }
 .modal-box h3 { margin: 0 0 16px; font-size: 15px; font-weight: 500; }
 .modal-box img { width: 180px; height: 180px; image-rendering: pixelated; }
 .modal-box .muted { margin: 10px 0 16px; }
+.modal-box.startup-login-box { position:relative; width:min(440px, calc(100vw - 40px)); padding:30px; text-align:left; }
+.startup-login-box h3 { padding-right:24px; margin:0 0 14px; font-size:20px; font-weight:600; }
+.startup-login-box p { margin:0; color:var(--muted); font-size:14px; line-height:1.85; }
+.startup-login-close { position:absolute; top:12px; right:12px; width:30px; height:30px; padding:0; border:0; background:transparent; color:var(--muted); font-size:22px; border-radius:8px; }
+.startup-login-close:hover { background:var(--bg); color:var(--text); }
+.startup-login-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:12px; margin-top:28px; }
+.startup-login-actions button { padding:9px 18px; }
 
 /* 播放列表（队列） */
 .q-btn { position: relative; padding: 0 8px; }
