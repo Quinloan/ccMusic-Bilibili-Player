@@ -15,7 +15,7 @@ function mockBridge() {
   Object.defineProperties(HTMLMediaElement.prototype, {
     src: { get() { return this._src || ''; }, set(value) { this._src = value; } },
     currentTime: { get() { return this._time || 0; }, set(value) { this._time = value; } },
-    readyState: { get: () => 1 }, duration: { get: () => 1200 }, paused: { get() { return !this._playing; } },
+    readyState: { get: () => window.testAudioReadyState ?? 1 }, duration: { get: () => 1200 }, paused: { get() { return !this._playing; } },
   });
   HTMLMediaElement.prototype.play = async function () { this._playing = true; this.dispatchEvent(new Event('loadedmetadata')); this.dispatchEvent(new Event('play')); };
   HTMLMediaElement.prototype.pause = function () { this._playing = false; this.dispatchEvent(new Event('pause')); };
@@ -77,7 +77,7 @@ async function run() {
   try {
     const page = await browser.newPage({ viewport: { width: 1280, height: 820 }, serviceWorkers: 'block' });
     const errors = []; page.on('pageerror', error => errors.push(error.message));
-    const routes = new Map(['/renderer/index.html', '/renderer/style.css', '/renderer/app.js', '/renderer/downloads.js', '/renderer/workflows.js', '/renderer/library-model.js', '/renderer/music-search-policy.js', '/assets/icon.png'].map(url => [url, path.join(root, url)]));
+    const routes = new Map(['/renderer/index.html', '/renderer/style.css', '/renderer/app.js', '/renderer/downloads.js', '/renderer/workflows.js', '/renderer/library-model.js', '/renderer/volume-balance.js', '/renderer/music-search-policy.js', '/assets/icon.png'].map(url => [url, path.join(root, url)]));
     await page.route('**/*', route => {
       const file = routes.get(new URL(route.request().url()).pathname);
       if (!file) return route.abort();

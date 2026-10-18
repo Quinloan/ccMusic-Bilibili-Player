@@ -74,6 +74,7 @@ function showView(v, opts) {
   if (back) back.classList.toggle('dim', viewStack.length === 0);
   scheduleVisibleSongCovers();
   if (v === 'search') scheduleSearchMore();
+  if (v === 'home') scheduleHomeMore();
 }
 // 返回上一视图；没有历史时提示
 function goBack() {
@@ -131,8 +132,8 @@ async function init() {
   S.qcur = Number.isInteger(lib?.qcur) && lib.qcur < S.queue.length ? lib.qcur : -1;
   restorePendingTasks();
   const savedVolume = Number(localStorage.savedVolume ?? 0.8);
-  audio.volume = Number.isFinite(savedVolume) ? Math.max(0, Math.min(1, savedVolume)) : 0.8;
-  $('#vol').value = posFromVol(audio.volume);
+  setUserVolume(Number.isFinite(savedVolume) ? savedVolume : 0.8, false);
+  $('#vol').value = posFromVol(userVolume);
   renderFolders();
   renderList();
   renderQueue();
@@ -141,7 +142,6 @@ async function init() {
   mark('首屏渲染完成');
   setTimeout(checkLogin, 350); // 登录状态走网络，错开首屏渲染
   setTimeout(migrateOldPartItems, 1200); // 旧多P条目（黑帧封面/序号标题）后台静默修复
-  setTimeout(loadHot, 800); // 热门推荐走网络，错开首屏
 }
 
 const LOGO_SRC = '../assets/icon.png';
@@ -348,7 +348,8 @@ function cardHtml(o, opts) {
 
 // 首页只放「音乐区热门」；最近播放和歌单入口不在这里
 function renderHome() {
-  if (S.hot.length) renderHotCards(); // 已拿到过就直接画，避免每次切首页都空白
+  updateHomePager();
+  scheduleHomeMore();
 }
 
 function bindHomeCards(box, kind) {
@@ -368,51 +369,71 @@ function bindHomeCards(box, kind) {
   });
 }
 
-function renderHotCards() {
+function renderHotCards(append = false) {
   const box = $('#homeHot');
-  box.innerHTML = S.hot.length
-    ? S.hot.map((it, i) => cardHtml(it, {
-        idx: i, kind: 'hot',
+  const start = append ? box.querySelectorAll('.hcard').length : 0;
+  if (!start) box.innerHTML = '';
+  if (S.hot.length) box.insertAdjacentHTML('beforeend', S.hot.slice(start).map((it, i) => cardHtml(it, {
+        idx: start + i, kind: 'hot',
         sub: `${it.author || ''} · ${fmtPlay(it.play)}播放`,
-      })).join('')
-    : '<div class="muted">暂时没有拿到热门列表</div>';
+      })).join(''));
   bindHomeCards(box, 'hot');
 }
 
-// 首页就是搜索「音乐」的结果；只剔掉课程/教程类和短于 1 分钟的内容，长合集照常显示
+// 首页沿用听歌筛选，逐页追加，独立于搜索视图的分页状态。
 const HOME_KW = '音乐';
 const durSec = (d) =>
   typeof d === 'string' && d.includes(':')
     ? d.split(':').reduce((a, b) => a * 60 + (+b || 0), 0)
     : Number(d) || 0;
 
-async function loadHot(attempt = 0) {
+let homePage = 0, homeHasMore = true, homeLoading = false, homeError = '';
+let homeAutoTimer = null, homeIdlePages = 0, homeAutoPaused = false;
+function nearHomeBottom() {
+  const page = $('#view-home .page');
+  return page.clientHeight > 0 && page.scrollHeight - page.scrollTop - page.clientHeight < 240;
+}
+function updateHomePager() {
+  $('#homeHot').setAttribute('aria-busy', String(homeLoading));
+  if (!S.hot.length) $('#homeHot').innerHTML = `<div class="muted">${homeError ? '推荐暂时不可用' : homeLoading || (homeHasMore && !homeAutoPaused) ? '正在加载…' : '暂时没有更多音乐推荐'}</div>`;
+  const pager = $('#homePager');
+  pager.querySelector('span').textContent = homeError ? '加载失败' : homeLoading ? '正在加载…' : homeAutoPaused ? '继续下滑查看更多推荐' : !homeHasMore && S.hot.length ? '没有更多了' : '';
+  const retry = pager.querySelector('button');
+  retry.hidden = !homeError;
+  retry.onclick = () => { homeError = ''; homeAutoPaused = false; homeIdlePages = 0; loadHot(); };
+}
+function scheduleHomeMore() {
+  if (homeAutoTimer !== null) return;
+  homeAutoTimer = setTimeout(() => {
+    homeAutoTimer = null;
+    if (S.view === 'home' && homeHasMore && !homeLoading && !homeError && !homeAutoPaused && nearHomeBottom()) loadHot();
+  }, 350);
+}
+function homeScrollIntent() {
+  if (homeAutoPaused && nearHomeBottom()) { homeAutoPaused = false; homeIdlePages = 0; updateHomePager(); }
+  scheduleHomeMore();
+}
+async function loadHot() {
+  if (homeLoading || !homeHasMore || S.view !== 'home') return;
+  homeLoading = true; homeError = ''; updateHomePager();
   try {
-    // 拉两页：第一页过滤后往往只剩十来个，两页够铺满
-    const [r1, r2] = await Promise.all([B.search(HOME_KW, 1), B.search(HOME_KW, 2).catch(() => ({ list: [] }))]);
-    const seen = new Set();
-    S.hot = [];
-    for (const x of [...(r1.list || []), ...(r2.list || [])]) {
-      if (seen.has(x.bvid)) continue;
-      seen.add(x.bvid);
-      if (MusicSearch.eligible(x, HOME_KW)) S.hot.push(x);
+    const nextPage = homePage + 1;
+    const result = await B.search(HOME_KW, nextPage);
+    const seen = new Set(S.hot.map(item => item.bvid));
+    const previousCount = S.hot.length;
+    for (const item of result.list || []) {
+      if (!item.bvid || seen.has(item.bvid) || !MusicSearch.eligible(item, HOME_KW)) continue;
+      seen.add(item.bvid); S.hot.push(item);
     }
+    homePage = nextPage; homeHasMore = !!result.hasMore && homePage < 100;
+    homeIdlePages = S.hot.length === previousCount ? homeIdlePages + 1 : 0;
+    homeAutoPaused = homeHasMore && (homeIdlePages >= 5 || !!result.partial);
+    renderHotCards(true);
   } catch (e) {
-    S.hot = [];
-    // 网络波动很常见：自动重试两次（5s / 10s），仍失败才给手动按钮
-    if (attempt < 2) {
-      const waitSec = attempt === 0 ? 5 : 10;
-      $('#homeHot').innerHTML = `<div class="muted">加载失败，${waitSec} 秒后自动重试…</div>`;
-      setTimeout(() => { if (S.view === 'home') loadHot(attempt + 1); }, waitSec * 1000);
-    } else {
-      $('#homeHot').innerHTML =
-        `<div class="muted">加载失败，<button id="hotRetry" style="padding:2px 10px;font-size:12px">点此重试</button></div>`;
-      const b = $('#hotRetry');
-      if (b) b.onclick = () => loadHot(0);
-    }
-    return;
+    homeError = e.message || '请稍后重试';
+  } finally {
+    homeLoading = false; updateHomePager(); scheduleHomeMore();
   }
-  renderHotCards();
 }
 
 // ---------------------------------------------------------------- 删除确认
@@ -1224,10 +1245,36 @@ async function pickParts(r) {
 }
 
 // ---------------------------------------------------------------- 音量平衡（响度均衡）
-// audio → MediaElementSource → DynamicsCompressor → Analyser → Gain → 输出
-// 关闭时跳过压缩器直通；开启时按实测峰值给一个补偿增益，让各曲目响度趋于一致
-let ac = null, srcNode = null, compNode = null, anNode = null, gainNode = null;
+// Source → loudness gain → peak protection → user volume → output.
+// A separate pre-fader stereo meter never sees the user's volume adjustment.
+let ac = null, srcNode = null;
 let agcTimer = null;
+let balanceGraph = null, balanceController = null, balanceKey = '', userVolume = 0.8;
+const volumeReferences = new Map();
+try {
+  const saved = JSON.parse(localStorage.volumeReferencesV1 || '[]');
+  if (Array.isArray(saved)) for (const entry of saved.slice(-100)) {
+    if (Array.isArray(entry) && typeof entry[0] === 'string' && entry[0].length < 300 && Number.isFinite(entry[1]) && entry[1] >= -50 && entry[1] <= 6) volumeReferences.set(entry[0], entry[1]);
+  }
+} catch (_) {}
+let volumeCacheTimer = null;
+function rememberVolumeReference() {
+  if (!balanceKey || balanceController?.samples < 30 || !Number.isFinite(balanceController?.reference)) return;
+  if (volumeReferences.has(balanceKey) && Math.abs(volumeReferences.get(balanceKey) - balanceController.reference) < 0.1) return;
+  volumeReferences.delete(balanceKey); volumeReferences.set(balanceKey, balanceController.reference);
+  while (volumeReferences.size > 100) volumeReferences.delete(volumeReferences.keys().next().value);
+  if (volumeCacheTimer !== null) return;
+  volumeCacheTimer = setTimeout(() => {
+    volumeCacheTimer = null;
+    try { localStorage.volumeReferencesV1 = JSON.stringify([...volumeReferences]); } catch (_) {}
+  }, 1500);
+}
+function setUserVolume(value, persist = true) {
+  userVolume = Math.max(0, Math.min(1, Number(value) || 0));
+  if (balanceGraph) { audio.volume = 1; balanceGraph.setVolume(userVolume); }
+  else audio.volume = userVolume;
+  if (persist) try { localStorage.savedVolume = String(userVolume); } catch (_) {}
+}
 
 const balanceOn = () => localStorage.volumeBalance !== '0';
 
@@ -1235,58 +1282,34 @@ function ensureGraph() {
   if (ac) return ac;
   const AC = window.AudioContext || window.webkitAudioContext;
   if (!AC) return null;
-  ac = new AC();
-  srcNode = ac.createMediaElementSource(audio);
-  compNode = ac.createDynamicsCompressor();
-  compNode.threshold.value = -20;
-  compNode.knee.value = 12;
-  compNode.ratio.value = 6;
-  compNode.attack.value = 0.005;
-  compNode.release.value = 0.25;
-  anNode = ac.createAnalyser();
-  anNode.fftSize = 2048;
-  gainNode = ac.createGain();
-  gainNode.gain.value = 1;
-  anNode.connect(gainNode);
-  gainNode.connect(ac.destination);
+  ac = new AC(); srcNode = ac.createMediaElementSource(audio);
+  balanceGraph = VolumeBalance.createGraph(ac, srcNode, userVolume);
+  audio.volume = 1;
   return ac;
 }
 
 function applyBalanceRouting() {
   if (!ensureGraph()) return;
-  try { srcNode.disconnect(); } catch (e) { /* 首次还没连 */ }
-  try { compNode.disconnect(); } catch (e) { /* 同上 */ }
-  if (balanceOn()) {
-    srcNode.connect(compNode);
-    compNode.connect(anNode);
-  } else {
-    srcNode.connect(anNode);
-  }
+  balanceGraph.setEnabled(balanceOn());
 }
 
-// 开播后采样约 5 秒，按峰值中位数算补偿增益（限制 0.6~2 倍，避免爆音）
-function startAgc() {
+function startAgc(item = playback.current?.item, track = playback.current?.track) {
   clearInterval(agcTimer);
-  if (!balanceOn() || !anNode) return;
-  if (gainNode) gainNode.gain.value = 1;
-  const buf = new Uint8Array(anNode.fftSize);
-  const peaks = [];
-  let n = 0;
+  agcTimer = null;
+  if (!balanceOn() || !balanceGraph) return;
+  const key = item ? itemKey(item) + '|' + (item.cid || 0) + '|' + (track?.id || '') : '';
+  rememberVolumeReference();
+  if (key !== balanceKey || !balanceController) {
+    balanceKey = key; balanceController = VolumeBalance.createController(volumeReferences.get(key));
+  }
+  balanceGraph.setDb(balanceController.db, true);
+  let meterReadyAt = ac.currentTime + 0.25;
   agcTimer = setInterval(() => {
-    if (audio.paused) return;
-    anNode.getByteTimeDomainData(buf);
-    let peak = 0;
-    for (let i = 0; i < buf.length; i++) peak = Math.max(peak, Math.abs(buf[i] - 128) / 128);
-    if (peak > 0.02) peaks.push(peak);
-    if (++n >= 12) {
-      clearInterval(agcTimer);
-      if (!peaks.length) return;
-      peaks.sort((a, b) => a - b);
-      const med = peaks[Math.floor(peaks.length / 2)];
-      const g = Math.min(2, Math.max(0.6, 0.5 / med));
-      gainNode.gain.setTargetAtTime(g, ac.currentTime, 0.4);
-    }
-  }, 400);
+    if (audio.seeking) meterReadyAt = ac.currentTime + 0.25;
+    if (audio.paused || audio.seeking || audio.readyState < 3 || ac.state !== 'running' || ac.currentTime < meterReadyAt) return;
+    balanceGraph.setDb(balanceController.push(balanceGraph.measure()));
+    rememberVolumeReference();
+  }, 100);
 }
 
 // ---------------------------------------------------------------- 待播队列（队列）
@@ -1381,6 +1404,7 @@ function removeFromQueue(i) {
 }
 
 function clearQueue() {
+  clearInterval(agcTimer); agcTimer = null; rememberVolumeReference();
   playback.sequence++; clearTimeout(playback.stallTimer);
   playback.current = null; playback.requested = null;
   if (playback.seekListener) audio.removeEventListener('loadedmetadata', playback.seekListener);
@@ -1535,13 +1559,13 @@ async function playTrack(it, idx, options = {}) {
       if (audio.readyState >= 1) seekTo();
       else { playback.seekListener = seekTo; audio.addEventListener('loadedmetadata', seekTo, { once: true }); }
     }
+    applyBalanceRouting();
+    startAgc(it, track);
     await audio.play();
     if (ticket !== playback.sequence) return false;
-    // 音频图要在真正播放后才建（首次播放有用户手势，AudioContext 才不会被挂起）
-    applyBalanceRouting();
+    // 首次异步取流可能失去用户手势，播放成功后恢复被浏览器挂起的音频图。
     if (ac && ac.state === 'suspended') await ac.resume().catch(() => {});
     if (ticket !== playback.sequence) return false;
-    startAgc(); // 每首歌重新测一次补偿增益
     setSongCover($('#bCover'), it);
     requestSongCover(it);
     $('#bTitle').textContent = it.title;
@@ -1789,7 +1813,7 @@ $('#volumeBalance').onchange = () => {
     startAgc();
   } else {
     clearInterval(agcTimer);
-    if (gainNode && ac) gainNode.gain.setTargetAtTime(1, ac.currentTime, 0.2);
+    agcTimer = null;
   }
   toast(on ? '已开启音量平衡' : '已关闭音量平衡');
 };
@@ -1845,6 +1869,11 @@ $('#results').addEventListener('scroll', scheduleSearchMore, { passive: true });
 $('#results').addEventListener('wheel', event => { if (event.deltaY > 0) searchScrollIntent(); }, { passive: true });
 $('#results').addEventListener('keydown', event => { if (['End', 'PageDown', 'ArrowDown'].includes(event.key)) searchScrollIntent(); });
 window.addEventListener('resize', scheduleSearchMore);
+const homeScroller = $('#view-home .page');
+homeScroller.addEventListener('scroll', scheduleHomeMore, { passive: true });
+homeScroller.addEventListener('wheel', event => { if (event.deltaY > 0) homeScrollIntent(); }, { passive: true });
+homeScroller.addEventListener('keydown', event => { if (['End', 'PageDown', 'ArrowDown'].includes(event.key)) homeScrollIntent(); });
+window.addEventListener('resize', scheduleHomeMore);
 
 // ---------------------------------------------------------------- 分 P 面板事件
 $('#addForm').onsubmit = confirmAddDialog;
@@ -1976,7 +2005,7 @@ const volFromPos = (pos) => {
   return t * t;
 };
 const posFromVol = (v) => Math.round(Math.sqrt(Math.max(0, Math.min(1, +v || 0))) * 100);
-$('#vol').oninput = () => { audio.volume = volFromPos($('#vol').value); try { localStorage.savedVolume = String(audio.volume); } catch (_) {} };
+$('#vol').oninput = () => setUserVolume(volFromPos($('#vol').value));
 $('#loginClose').onclick = () => {
   cancelPendingDownloadLogin();
   clearInterval(pollTimer);

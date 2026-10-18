@@ -8,7 +8,7 @@ async function run() {
   try {
     const page = await browser.newPage({ viewport: { width: 1280, height: 820 }, serviceWorkers: 'block' });
     const errors = []; page.on('pageerror', e => errors.push(e.message));
-    const files = ['/renderer/index.html', '/renderer/style.css', '/renderer/app.js', '/renderer/downloads.js', '/renderer/workflows.js', '/renderer/library-model.js', '/renderer/music-search-policy.js', '/assets/icon.png'];
+    const files = ['/renderer/index.html', '/renderer/style.css', '/renderer/app.js', '/renderer/downloads.js', '/renderer/workflows.js', '/renderer/library-model.js', '/renderer/volume-balance.js', '/renderer/music-search-policy.js', '/assets/icon.png'];
     await page.route('**/*', route => {
       const name = new URL(route.request().url()).pathname;
       if (!files.includes(name)) return route.abort();

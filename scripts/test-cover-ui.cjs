@@ -8,7 +8,7 @@ async function run() {
   try {
     const page = await browser.newPage({ viewport: { width: 1280, height: 820 }, serviceWorkers: 'block' });
     const errors = []; page.on('pageerror', error => errors.push(error.message));
-    const files = ['/renderer/index.html', '/renderer/style.css', '/renderer/app.js', '/renderer/downloads.js', '/renderer/workflows.js', '/renderer/library-model.js', '/renderer/music-search-policy.js', '/assets/icon.png'];
+    const files = ['/renderer/index.html', '/renderer/style.css', '/renderer/app.js', '/renderer/downloads.js', '/renderer/workflows.js', '/renderer/library-model.js', '/renderer/volume-balance.js', '/renderer/music-search-policy.js', '/assets/icon.png'];
     await page.route('**/*', route => {
       const url = new URL(route.request().url());
       if (url.host === 'art.test') return url.pathname === '/missing.png' ? route.abort() : route.fulfill({ body: fs.readFileSync(path.join(root, 'assets/icon.png')), contentType: 'image/png' });
