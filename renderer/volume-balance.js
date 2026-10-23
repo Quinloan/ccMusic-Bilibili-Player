@@ -1,7 +1,9 @@
 // Playback loudness matching, independent of the user's volume fader.
 // Weighted RMS is an estimate, not a certified BS.1770/LUFS measurement.
 (function (root) {
-  const MIN_DB = -18, MAX_DB = 12, TARGET_DB = -20, INITIAL_DB = -6;
+  // Leave useful output at the top of the fader. The old -20 dB estimate
+  // made even maximum volume too quiet; allow quiet masters the same lift.
+  const MIN_DB = -18, MAX_DB = 18, TARGET_DB = -14, INITIAL_DB = -3;
   const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
   const amplitude = db => 10 ** (db / 20);
   function rms(channels) {
@@ -90,7 +92,7 @@
       },
     };
   }
-  const api = { createController, createGraph, rms, amplitude, INITIAL_DB, MIN_DB, MAX_DB };
+  const api = { createController, createGraph, rms, amplitude, INITIAL_DB, MIN_DB, MAX_DB, TARGET_DB };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.VolumeBalance = api;
 })(globalThis);

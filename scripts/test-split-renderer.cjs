@@ -38,6 +38,7 @@ async function run() {
   context.applyBalanceRouting = () => {};
   context.startAgc = () => {};
   context.syncQualityBtn = () => {};
+  context.mergeAdjacentIdentified = () => {};
   context.ac = null;
   Object.defineProperty(context.audio, 'currentTime', { configurable: true, get: () => 420, set: t => events.push('seek:' + t) });
   context.audio.readyState = 1;

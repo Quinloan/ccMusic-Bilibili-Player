@@ -4,7 +4,9 @@
 
 ## 安装
 
-在 [Releases](https://github.com/Quinloan/ccMusic-Bilibili-Player/releases/latest) 下载 `ccMusic-Setup-1.6.2.exe`，适用于 Windows 10/11 x64。覆盖安装可保留本机歌单和登录状态。安装包默认不捆绑 Whisper 模型，无需另外注册识曲服务账号。
+在 [Releases](https://github.com/Quinloan/ccMusic-Bilibili-Player/releases/latest) 下载 `ccMusic-Setup-1.6.3.exe`，适用于 Windows 10/11 x64。覆盖安装可保留本机歌单和登录状态。安装包默认不捆绑 Whisper 模型，无需另外注册识曲服务账号。
+
+v1.6.3 为修复补丁：改善频繁拖动后的播放跳转、提高音量平衡后的输出余量，并完善短转场切分、同曲碎片合并和已切分曲目的右键操作。完整说明见 [v1.6.3 发布说明](RELEASE_NOTES_v1.6.3.md)。
 
 ## 功能
 
@@ -25,11 +27,13 @@
 
 ## 界面预览
 
-![首页音乐推荐](https://github.com/Quinloan/ccMusic-Bilibili-Player/releases/download/v1.6.2/01-home.png)
+以下界面示例沿用 v1.6.2 发布截图。
 
-![智能分割与加入歌单](https://github.com/Quinloan/ccMusic-Bilibili-Player/releases/download/v1.6.2/02-smart-split.png)
+![首页音乐推荐](https://github.com/Quinloan/ccMusic-Bilibili-Player/releases/download/v1.6.3/01-home.png)
 
-![歌单分组与歌曲资料](https://github.com/Quinloan/ccMusic-Bilibili-Player/releases/download/v1.6.2/03-playlist.png)
+![智能分割与加入歌单](https://github.com/Quinloan/ccMusic-Bilibili-Player/releases/download/v1.6.3/02-smart-split.png)
+
+![歌单分组与歌曲资料](https://github.com/Quinloan/ccMusic-Bilibili-Player/releases/download/v1.6.3/03-playlist.png)
 
 ## 数据
 

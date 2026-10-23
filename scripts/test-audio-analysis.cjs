@@ -39,6 +39,13 @@ const quiet = envelope(400, 0.02); quiet.fill(0.0005, 1995, 2005);
 assert.equal(splitRms(quiet, 400).tracks.length, 2);
 const inside = envelope(400); inside.fill(0, 1999, 2002);
 assert.equal(splitRms(inside, 400).tracks.length, 1); // 300ms is not a boundary
+const shortFade = envelope(1000);
+shortFade.splice(7246, 3, 0.02323, 0.000067, 0.01101);
+assert.ok(splitRms(shortFade, 1000).tracks.some(track => track.end === 724.8), 'a near-digital shaped edit join is not missed for being under 600ms');
+for (const values of [[0.023, 0.008, 0.011], [0, 0, 0], [0.03, 0.00005, 0.03, 0.03, 0.03, 0.03]]) {
+  const pause = envelope(1000); pause.splice(7246, values.length, ...values);
+  assert.equal(splitRms(pause, 1000).tracks.length, 1, 'do not globally lower the silence-duration threshold');
+}
 const competing = envelope(600);
 competing.fill(0.015, 2796, 2804); // weaker intra-song pause
 competing.fill(0.0001, 3190, 3210); // strong real boundary 40 seconds later

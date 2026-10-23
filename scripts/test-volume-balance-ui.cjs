@@ -54,11 +54,15 @@ async function run() {
     assert.equal((await read()).native, 1);
     await page.clock.runFor(5500);
     let measured = await read(); assert.ok(Math.abs(measured.reference + 20) < 0.01); assert.ok(measured.samples >= 45);
+    assert.ok(Math.abs(measured.gain - 10 ** (6 / 20)) < 0.001, 'measured -20 dB song receives the new +6 dB gain');
     const reference = measured.reference;
     await page.evaluate(() => { $('#vol').value = '50'; $('#vol').dispatchEvent(new Event('input')); });
     await page.clock.runFor(2000);
     measured = await read(); assert.equal(measured.master, 0.25); assert.equal(measured.reference, reference);
     assert.equal(await page.evaluate(() => localStorage.savedVolume), '0.25');
+    await page.evaluate(() => { $('#vol').value = '100'; $('#vol').dispatchEvent(new Event('input')); });
+    measured = await read(); assert.equal(measured.master, 1, 'maximum fader does not add another attenuation stage');
+    assert.equal(measured.reference, reference, 'higher user volume does not change the learned song loudness');
     await page.evaluate(() => { $('#vol').value = '0'; $('#vol').dispatchEvent(new Event('input')); });
     assert.equal((await read()).master, 0, 'mute remains mute');
     await page.evaluate(() => { audio.pause(); window.testRms = 0.6; });
@@ -81,6 +85,7 @@ async function run() {
     await page.clock.runFor(4000);
     await play({ ...item, split: true, startSec: 60, endSec: 100 }); assert.equal((await read()).reference, null, 'new split gets its own reference');
     await play(item); assert.equal((await read()).reference, reference, 'replay uses cached reference before any metering');
+    assert.ok(Math.abs((await read()).gain - 10 ** (6 / 20)) < 0.001, 'cached reference uses the higher target immediately');
     await page.evaluate(() => { $('#volumeBalance').checked = false; $('#volumeBalance').dispatchEvent(new Event('change')); });
     assert.equal(await page.evaluate(() => agcTimer), null);
     assert.equal(await page.evaluate(() => srcNode.connections.has(balanceGraph.master) && !srcNode.connections.has(balanceGraph.gain)), true);

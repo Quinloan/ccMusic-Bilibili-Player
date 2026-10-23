@@ -1,6 +1,6 @@
 # ccMusic 开发说明
 
-当前正式版为 v1.6.2，用户与构建入口见 README.md。
+当前正式版为 v1.6.3，用户与构建入口见 README.md。
 
 - main.js / preload.cjs：Electron 主进程和 IPC。
 - renderer/：播放器、搜索、歌单、任务、下载和分段预览。

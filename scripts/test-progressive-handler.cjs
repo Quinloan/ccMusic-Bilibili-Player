@@ -33,6 +33,15 @@ async function run() {
   };
   const invoke = (id, options, owner = sender) => handlers.get('split:analyze')({ sender: owner }, 'BV12M4m1y7hf', 11, undefined, '', id, options);
   try {
+    const historyBase = { bvid: 'BV1CaPrz7EL6', cid: 36468035480, title: '再见爱人', artist: '胡彦斌', startSec: 2667, endSec: 2800.6 };
+    for (const [start, end] of [[2667, 2735.4], [2735.4, 2800.6]]) {
+      const key = createHash('sha256').update(`progressive:${historyBase.bvid}:${historyBase.cid}:false:${start}:${end}`).digest('hex');
+      localRequire('./analysis-cache.cjs').saveAnalysis(path.join(profile, 'split-analysis-cache.json'), key, { tracks: [{ start, end, title: historyBase.title, artist: historyBase.artist, source: 'netease' }] });
+    }
+    const history = handlers.get('split:history')({ sender }, [historyBase, { ...historyBase, cid: 1 }]);
+    assert.deepEqual(history, [[{ start: 2667, end: 2735.4 }, { start: 2735.4, end: 2800.6 }], null]);
+    assert.equal(handlers.get('split:history')({ sender }, null).length, 0);
+    assert.equal(handlers.get('split:history')({ sender }, Array(1001).fill(historyBase)).length, 0);
     assert.equal(await handlers.get('artwork:resolve')({ sender }, { name: '直接封面', cover: 'https://p1.music.126.net/direct.jpg' }), 'https://p1.music.126.net/direct.jpg');
     assert(fs.existsSync(path.join(profile, 'song-artwork-cache.json')), 'actual artwork IPC persists metadata in the user profile');
     const split = await invoke('cut', { mode: 'split' });
@@ -88,6 +97,11 @@ async function run() {
     const before = downloads;
     await assert.rejects(invoke('bad', { mode: 'recognize', tracks: [{ start: 0, end: 10 }, { start: 20, end: 100 }] }), /时间范围/);
     assert.equal(downloads, before);
+    blockAfter = Infinity;
+    const beforeRefresh = calls;
+    const single = await invoke('refresh-single', { mode: 'recognize', tracks: [{ start: 0, end: split.duration, title: '', refresh: true }] });
+    assert.equal(single.tracks.length, 1, 'a single selected full-span segment can be re-identified');
+    assert.equal(calls, beforeRefresh + 2, 'explicit refresh performs fresh corroborated fingerprint requests');
     const cut3 = await invoke('cut3', { mode: 'split' });
     assert(cut3.sessionId); sender.emit('destroyed');
     assert.equal(vm.runInContext('splitSessions.size', context), 0, 'closing renderer releases unused samples');

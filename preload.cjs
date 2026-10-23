@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('api', {
   splitAnalyze: (bvid, cid, maxSec, description, requestId, options) => ipcRenderer.invoke('split:analyze', bvid, cid, maxSec, description, requestId, options),
   splitRelease: sessionId => ipcRenderer.invoke('split:release', sessionId),
   splitCancel: requestId => ipcRenderer.invoke('split:cancel', requestId),
+  splitHistory: items => ipcRenderer.invoke('split:history', items),
   songCover: match => ipcRenderer.invoke('artwork:resolve', match),
   resolveSongTitle: input => ipcRenderer.invoke('song:resolve-title', input),
   onSplitProgress: (cb) => { ipcRenderer.on('split:progress', (_e, p) => cb(p)); },

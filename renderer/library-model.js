@@ -32,6 +32,8 @@
       .replace(/\d+(?:\.\d+)?\s*(?:小时|分钟|分|小时版)|热门|热歌|金曲|精选/gi, ' ')
       .replace(/录音室作品|录音室专辑|音乐作品|作品全集|作品合集|歌曲全集|音乐全集|歌曲合集|音乐合集|全专辑|全歌曲|全部歌曲|热门歌曲|精选歌曲|歌曲精选|金曲精选|精选|全集|合集|合辑|专辑|音乐|歌曲|收录|大全|全辑|完整|\d+首/gi, '').trim();
     if (!parentArtist || parentArtist.length > 45 || /[《》「」“”!?！？:：|]|B站|华语|欧美|热门|流行|经典|歌单|串烧|推荐|盘点|放松|通勤|专注|翻唱|现场|演唱会|\bcover\b|\bAI\b/i.test(parentArtist)) parentArtist = '';
+    // A previously fingerprinted performer is stronger evidence than a playlist caption.
+    if (typeof input.artist === 'string' && input.artist.trim() && input.artist.length <= 100) parentArtist = input.artist.trim();
     const versioned = /翻唱|现场|演唱会|伴奏|\b(?:cover|live|remix|AI)\b/i.test(raw + ' ' + parentSource);
     if (input.parentTitle && /专辑/.test(raw) && /翻唱|伴奏|\b(?:cover|AI)\b/i.test(raw + ' ' + parentSource)) return null;
     let albumPart = null, albumLabel = false;
@@ -80,8 +82,8 @@
     const metadataVersion = albumLabel ? 4 : albumPart || (parentArtist && (parentLabelFree !== parentSource || /录音室作品|录音室专辑|音乐作品|作品全集|作品合集/.test(parentSource))) ? 3 : 2;
     return candidates.length ? { raw, candidates, query: query.slice(0, 240), fallback, parentArtist, metadataVersion } : null;
   }
-  function validateTracks(tracks, seconds) {
-    if (!Array.isArray(tracks) || tracks.length < 2 || tracks.length > 1000) throw new Error('请保留至少两首曲目');
+  function validateTracks(tracks, seconds, minimum = 2) {
+    if (!Array.isArray(tracks) || tracks.length < minimum || tracks.length > 1000) throw new Error('请保留至少两首曲目');
     let end = 0;
     const result = tracks.map((track, i) => {
       const start = Number(track.start), next = Number(track.end);
@@ -97,13 +99,14 @@
     const rows = tracks.map(t => ({ ...t }));
     rows[index - 1].end = rows[index].end;
     rows[index - 1].source = 'manual';
+    rows[index - 1].boundaryLocked = true;
     rows.splice(index, 1);
     return rows;
   }
   function cutTrack(tracks, index, time) {
     const rows = tracks.map(t => ({ ...t })), track = rows[index], at = duration(time);
     if (!track || !Number.isFinite(at) || at <= track.start + 0.1 || at >= track.end - 0.1) throw new Error('切点需要位于这首曲目内部');
-    rows.splice(index, 1, { ...track, end: at, source: 'manual' }, { ...track, start: at, title: '', source: 'manual' });
+    rows.splice(index, 1, { ...track, end: at, source: 'manual', boundaryLocked: true }, { ...track, start: at, title: '', source: 'manual', boundaryLocked: true });
     return rows;
   }
   function importedFolders(raw) {
@@ -126,6 +129,10 @@
           if (![item.startSec, item.endSec].every(n => typeof n === 'number' && Number.isFinite(n)) || item.startSec < 0 || item.endSec <= item.startSec) throw new Error('分段时间无效');
           Object.assign(clean, { split: true, startSec: item.startSec, endSec: item.endSec, duration: item.endSec - item.startSec });
           if (Number.isFinite(item.originalDuration) && item.originalDuration >= item.endSec && item.originalDuration <= 1e7) clean.originalDuration = item.originalDuration;
+          if (typeof item.splitBatch === 'string') clean.splitBatch = item.splitBatch.slice(0, 100);
+          if (item.boundaryLocked === true) clean.boundaryLocked = true;
+          const fragments = fragmentRanges(item);
+          if (fragments.length > 1) clean.splitFragments = fragments;
         }
         for (const key of ['artist', 'referenceArtist', 'identifySource']) if (typeof item[key] === 'string') clean[key] = item[key].slice(0, 200);
         const artwork = songCoverUrl(item.songCover);
@@ -171,7 +178,30 @@
       get active() { return active; }, get waiting() { return waiting.length; },
     };
   }
-  const api = { duration, isVideoPart, songCoverUrl, songTitleIntent, validateTracks, mergeTrack, cutTrack, importedFolders, createMetadataQueue };
+  function fragmentRanges(item) {
+    const fallback = [{ start: item.startSec, end: item.endSec }], rows = item.splitFragments;
+    if (!Array.isArray(rows) || rows.length < 2 || rows.length > 1000) return fallback;
+    let end = item.startSec;
+    for (const row of rows) {
+      if (!Number.isFinite(row?.start) || !Number.isFinite(row.end) || row.end <= row.start || Math.abs(row.start - end) > 0.15) return fallback;
+      end = row.end;
+    }
+    return Math.abs(end - item.endSec) <= 0.15 ? rows.map(({ start, end }) => ({ start, end })) : fallback;
+  }
+  function canMergeFragments(left, right) {
+    if (!left?.split || !right?.split || !left.splitBatch || left.splitBatch !== right.splitBatch ||
+      left.bvid !== right.bvid || String(left.cid || '') !== String(right.cid || '') || (+left.page || 1) !== (+right.page || 1) ||
+      left.boundaryLocked || right.boundaryLocked || !['netease', 'shazam'].includes(left.identifySource) || !['netease', 'shazam'].includes(right.identifySource)) return false;
+    const a = left.endSec - left.startSec, b = right.endSec - right.startSec;
+    const parts = [...fragmentRanges(left), ...fragmentRanges(right)];
+    const shortest = Math.min(...parts.map(part => part.end - part.start));
+    if (![a, b, left.startSec, right.startSec].every(Number.isFinite) || a <= 0 || b <= 0 ||
+      Math.abs(left.endSec - right.startSec) > 0.15 || Math.abs(a - b) <= 1 || shortest >= 120 || a + b > 600) return false;
+    const key = value => String(value || '').normalize('NFKC').toLowerCase().replace(/\s+/g, '');
+    if (!key(left.title) || !key(left.artist) || key(left.title) !== key(right.title) || key(left.artist) !== key(right.artist)) return false;
+    return !left.neteaseId || !right.neteaseId || String(left.neteaseId) === String(right.neteaseId);
+  }
+  const api = { duration, isVideoPart, songCoverUrl, songTitleIntent, validateTracks, mergeTrack, cutTrack, importedFolders, createMetadataQueue, canMergeFragments, fragmentRanges };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.LibraryModel = api;
 })(globalThis);

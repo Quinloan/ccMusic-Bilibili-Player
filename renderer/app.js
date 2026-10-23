@@ -313,9 +313,11 @@ async function maybeSplit(f, item, description = '') {
   if ((+item.page || 1) > 1) return; // 只处理整段，分 P 不重复分析
   return runSplitTask(f, item, description);
 }
-function applySplitResult(f, item, r) {
-  const idx = f.items.indexOf(item);
+function applySplitResult(f, item, r, previous = null) {
+  const idx = previous ? f.items.findIndex(candidate => previous.includes(candidate)) : f.items.indexOf(item);
   if (idx < 0) return;
+  if (previous?.some(candidate => !f.items.includes(candidate))) throw new Error('原分段已变更，请重新分析');
+  if (previous) for (const oldBatch of new Set(previous.map(candidate => candidate.splitBatch))) stopBatchRecognition(oldBatch);
   const batch = uniqueId();
   const tracks = r.tracks.map((t, i) => ({
     ...item,
@@ -333,32 +335,40 @@ function applySplitResult(f, item, r) {
     endSec: t.end,
     split: true,
     splitBatch: batch,
+    splitFragments: undefined,
+    boundaryLocked: !!t.boundaryLocked || ['manual', 'description'].includes(t.source),
     originalDuration: r.duration || item.duration,
   }));
-  f.items.splice(idx, 1, ...tracks); // 用切好的曲目替换原来那一整段
+  if (previous) {
+    for (let i = f.items.length - 1; i >= 0; i--) if (previous.includes(f.items[i])) f.items.splice(i, 1);
+    f.items.splice(idx, 0, ...tracks);
+  } else f.items.splice(idx, 1, ...tracks);
   // Queues contain copies; replace any whole-video copy as well.
   const oldQueue = S.queue;
   const oldCurrent = S.qcur;
   let newCurrent = oldCurrent;
   const nextQueue = [];
+  let replacing = false, replaceStart = 0;
   oldQueue.forEach((entry, queueIndex) => {
-    const replacement = !entry.split && itemKey(entry) === itemKey(item);
+    const replacement = previous ? entry.split && previous.some(old => itemKey(old) === itemKey(entry)) : !entry.split && itemKey(entry) === itemKey(item);
+    if (replacement && !replacing) { replaceStart = nextQueue.length; nextQueue.push(...tracks.map(t => ({ ...t }))); }
     if (queueIndex === oldCurrent) {
       newCurrent = nextQueue.length;
       if (replacement) {
         const part = Math.max(0, tracks.findIndex(t => audio.currentTime >= t.startSec && audio.currentTime < t.endSec));
-        newCurrent += part;
+        newCurrent = replaceStart + part;
         curSplitStart = tracks[part].startSec; curSplitEnd = tracks[part].endSec;
         $('#bTitle').textContent = tracks[part].title;
       }
     }
-    nextQueue.push(...(replacement ? tracks.map(t => ({ ...t })) : [entry]));
+    if (!replacement) nextQueue.push(entry);
+    replacing = replacement;
   });
   S.queue = nextQueue; S.qcur = newCurrent;
   if (folder() === f && S.qcur >= 0) S.cur = f.items.findIndex(t => itemKey(t) === itemKey(S.queue[S.qcur]));
   syncCurrentSegment();
   save(); renderFolders(); renderList(); renderQueue();
-  offerUndo('已应用分歌结果', () => restoreSplitBatch(f, item, batch));
+  offerUndo(previous ? '已重新分歌' : '已应用分歌结果', () => previous ? undoResplit(f, previous, oldQueue, batch) : restoreSplitBatch(f, item, batch));
   toast(`已加入 ${tracks.length} 首`);
   return batch;
 }
@@ -707,7 +717,8 @@ function renderList() {
           { label: collapsed.has(bid) ? '展开全部 P' : '收起', action: () => toggleCollapsed(bid) },
           { label: '播放', action: () => playIndex(start) },
           { label: '选择歌曲下载…', action: () => openDownloadPicker(f.items.slice(start, start + cnt), f.items[start].vtitle || f.name) },
-          ...(!f.items[start].split ? [{ label: '解析整组歌曲信息', action: () => parseSongMetadata(f.items.slice(start, start + cnt)) }] : []),
+          { label: '解析整组歌曲信息', action: () => parseSongMetadata(f.items.slice(start, start + cnt)) },
+          ...(f.items[start].split ? [{ label: '重新智能分歌…', action: () => resplitVideo(f, f.items[start]) }] : []),
           ...(f.items[start].split ? [{ label: '恢复整段…', action: () => restoreWholeVideo(f, f.items[start]) }] : []),
           { label: '在浏览器打开 B 站页面', action: () => B.openExternal('https://www.bilibili.com/video/' + bid) },
           { label: '复制视频链接', action: () => { B.copyText('https://www.bilibili.com/video/' + bid); toast('链接已复制'); } },
@@ -731,7 +742,8 @@ function renderList() {
         { label: '下载（最高可用音质）', action: () => requestDownloads([it]) },
         { label: '下一首播放', action: () => addNext([it]) },
         { label: '编辑歌曲信息…', action: () => editSongInfo(it) },
-        ...(!it.split ? [{ label: '解析歌曲信息', action: () => parseSongMetadata([it]) }] : []),
+        { label: '解析歌曲信息', action: () => parseSongMetadata([it]) },
+        ...(it.split ? [{ label: '重新智能分歌…', action: () => resplitVideo(f, it) }] : []),
         ...(it.split ? [{ label: '恢复整段…', action: () => restoreWholeVideo(f, it) }] : []),
         ...(!it.split && canSplitItem(it) ? [{ label: '智能分歌…', action: () => maybeSplit(f, it) }] : []),
         { label: '加入待播队列', action: () => qToastAdd([it]) },
@@ -1403,7 +1415,7 @@ function renderQueue() {
         event.preventDefault();
         const item = S.queue[+el.dataset.i];
         if (item) showCtxMenu(event.clientX, event.clientY, [{ label: '编辑歌曲信息…', action: () => editSongInfo(item) },
-          ...(!item.split ? [{ label: '解析歌曲信息', action: () => parseSongMetadata([item]) }] : [])]);
+          { label: '解析歌曲信息', action: () => parseSongMetadata([item]) }]);
       };
       el.onclick = (e) => {
         if (e.target.dataset.x !== undefined) {
@@ -1461,6 +1473,7 @@ function clearQueue() {
   clearInterval(agcTimer); agcTimer = null; rememberVolumeReference();
   playback.sequence++; clearTimeout(playback.stallTimer);
   playback.current = null; playback.requested = null;
+  playback.seekTarget = null; playback.seekRevision++;
   if (playback.seekListener) audio.removeEventListener('loadedmetadata', playback.seekListener);
   playback.seekListener = null;
   audio.pause(); audio.removeAttribute('src'); audio.load();
@@ -1568,7 +1581,8 @@ async function migrateOldPartItems() {
 let splitAdvancing = false;
 let curSplitStart = null;
 let curSplitEnd = null;
-const playback = { sequence: 0, current: null, seekListener: null, recovering: false, lastPosition: 0, stallTimer: null };
+const playback = { sequence: 0, current: null, seekListener: null, recovering: false, lastPosition: 0, stallTimer: null,
+  seekTarget: null, seekRevision: 0 };
 function setPlaybackStatus(text, failed = false) {
   const status = $('#playStatus');
   if (status) {
@@ -1580,14 +1594,51 @@ function setPlaybackStatus(text, failed = false) {
   }
 }
 
+function scheduleStallRecovery() {
+  clearTimeout(playback.stallTimer);
+  const ticket = playback.sequence, revision = playback.seekRevision;
+  if (!playback.current || audio.paused) return;
+  playback.stallTimer = setTimeout(() => {
+    if (ticket === playback.sequence && revision === playback.seekRevision && !audio.paused &&
+      (audio.seeking || audio.readyState < 3)) recoverPlayback();
+  }, 12000);
+}
+function playbackDuration(item) {
+  const actual = playback.current?.ticket === playback.sequence && audio.readyState >= 1 ? audio.duration : NaN;
+  if (Number.isFinite(actual) && actual > 0) return actual;
+  const known = Number(item?.duration);
+  return Number.isFinite(known) && known > 0 ? known : null;
+}
+function seekPlayback(position) {
+  if (!Number.isFinite(position) || !playback.requested) return;
+  const item = playback.current?.item || playback.requested.item;
+  const start = item.split ? item.startSec : 0;
+  const end = item.split ? item.endSec : (playbackDuration(item) ?? Infinity);
+  const target = Math.max(start, Math.min(position, end));
+  playback.seekRevision++;
+  playback.lastPosition = target; playback.seekTarget = target;
+  playback.requested.position = target; playback.requested.userSeek = true;
+  clearTimeout(playback.stallTimer);
+  // While a new URL/metadata is pending, retain only the latest desired position.
+  // Writing currentTime here would seek the old source, then get overwritten.
+  if (playback.current?.ticket === playback.sequence && audio.readyState >= 1) {
+    if (playback.seekListener) audio.removeEventListener('loadedmetadata', playback.seekListener);
+    playback.seekListener = null;
+    try { audio.currentTime = target; } catch (_) {}
+    scheduleStallRecovery();
+  }
+}
+
 async function playTrack(it, idx, options = {}) {
   const ticket = ++playback.sequence;
   clearTimeout(playback.stallTimer);
   if (playback.seekListener) audio.removeEventListener('loadedmetadata', playback.seekListener);
   playback.seekListener = null;
   playback.current = null;
-  playback.requested = { item: it, idx };
-  playback.lastPosition = options.position ?? it.startSec ?? 0;
+  const request = { item: it, idx, position: options.position ?? it.startSec ?? 0, userSeek: false };
+  playback.requested = request;
+  playback.lastPosition = request.position;
+  playback.seekTarget = null; playback.seekRevision++;
   if (audio.pause) audio.pause();
   setPlaybackStatus(options.recovery ? '正在恢复播放…' : '正在加载…');
   try {
@@ -1602,19 +1653,21 @@ async function playTrack(it, idx, options = {}) {
     curSplitStart = it.split && it.startSec != null ? it.startSec : null;
     curSplitEnd = it.split && it.endSec != null ? it.endSec : null;
     const urls = [...new Set([track.url, ...(track.backupUrls || [])])];
-    const position = options.position ?? curSplitStart ?? 0;
-    playback.lastPosition = position;
+    playback.lastPosition = request.position;
     playback.current = { item: it, idx, track, urls, urlIndex: options.urlIndex || 0, attempts: options.attempts || 0, ticket, preview: !!options.preview };
+    playback.seekTarget = request.position > 0 || request.userSeek ? request.position : null;
     audio.src = urls[playback.current.urlIndex] || urls[0];
-    if (position > 0) {
-      const seekTo = () => {
-        if (ticket !== playback.sequence) return;
-        try { audio.currentTime = Math.max(curSplitStart ?? 0, Math.min(position, (curSplitEnd ?? Infinity) - 0.05)); } catch (e) {}
-        playback.seekListener = null;
-      };
-      if (audio.readyState >= 1) seekTo();
-      else { playback.seekListener = seekTo; audio.addEventListener('loadedmetadata', seekTo, { once: true }); }
-    }
+    const seekTo = () => {
+      if (ticket !== playback.sequence) return;
+      playback.seekListener = null;
+      if (request.position > 0 || request.userSeek) {
+        const target = Math.max(curSplitStart ?? 0, Math.min(request.position, (curSplitEnd ?? Infinity) - 0.05));
+        playback.lastPosition = target; playback.seekTarget = target;
+        try { audio.currentTime = target; } catch (_) {}
+      }
+    };
+    if (audio.readyState >= 1) seekTo();
+    else { playback.seekListener = seekTo; audio.addEventListener('loadedmetadata', seekTo, { once: true }); }
     applyBalanceRouting();
     startAgc(it, track);
     await audio.play();
@@ -1632,6 +1685,7 @@ async function playTrack(it, idx, options = {}) {
     setPlayIcon(true);
     setPlaybackStatus('播放中');
     B.setTrayTip(it.title); // 托盘悬停时显示当前曲目
+    if (it.split) mergeAdjacentIdentified(it.splitBatch);
     renderList();
     renderQueue();
     return true;
@@ -1649,7 +1703,9 @@ async function recoverPlayback() {
   if (!current || playback.recovering || current.ticket !== playback.sequence) return;
   if (current.attempts >= 2) { setPlaybackStatus('播放中断 · 点击重试', true); return; }
   playback.recovering = true;
-  const position = Math.max(playback.lastPosition, Number(audio.currentTime) || 0);
+  // lastPosition is updated synchronously by explicit seeks. Taking the maximum
+  // with currentTime can resurrect an older forward position after seeking back.
+  const position = playback.seekTarget ?? playback.lastPosition;
   const hasBackup = current.urlIndex + 1 < current.urls.length;
   try {
     await playTrack(current.item, current.idx, { recovery: true, position, attempts: current.attempts + 1,
@@ -2008,30 +2064,41 @@ $('#mode').onclick = () => {
 audio.onplay = () => setPlayIcon(true);
 audio.onpause = () => { clearTimeout(playback.stallTimer); setPlayIcon(false); setPlaybackStatus('已暂停'); };
 audio.onplaying = () => { clearTimeout(playback.stallTimer); setPlaybackStatus('播放中'); };
+audio.onseeking = () => { scheduleStallRecovery(); };
+audio.onseeked = () => {
+  if (!playback.current || playback.current.ticket !== playback.sequence || audio.seeking) return;
+  if (playback.seekTarget != null && Math.abs(audio.currentTime - playback.seekTarget) > 0.5) return;
+  playback.seekTarget = null;
+  playback.lastPosition = audio.currentTime;
+  if (audio.readyState < 3) scheduleStallRecovery();
+  else clearTimeout(playback.stallTimer);
+};
 audio.onwaiting = () => {
-  setPlaybackStatus('正在缓冲…'); clearTimeout(playback.stallTimer);
-  const ticket = playback.sequence;
-  playback.stallTimer = setTimeout(() => { if (ticket === playback.sequence && !audio.paused) recoverPlayback(); }, 12000);
+  setPlaybackStatus('正在缓冲…'); scheduleStallRecovery();
 };
 audio.onerror = () => {
-  const ticket = playback.sequence;
-  setTimeout(() => { if (ticket === playback.sequence) recoverPlayback(); }, 0);
+  const ticket = playback.sequence, revision = playback.seekRevision;
+  setTimeout(() => { if (ticket === playback.sequence && revision === playback.seekRevision) recoverPlayback(); }, 0);
 };
 audio.onended = () => {
   if (playback.current?.preview) { audio.pause(); setPlaybackStatus('试听结束'); return; }
   if (S.mode === 'single') {
-    audio.currentTime = curSplitStart ?? 0;
+    seekPlayback(curSplitStart ?? 0);
     audio.play().catch(() => recoverPlayback());
   } else step(1);
 };
 audio.ontimeupdate = () => {
-  if (!audio.duration) return;
+  if (!audio.duration || !playback.current || playback.current.ticket !== playback.sequence || audio.seeking) return;
+  if (playback.seekTarget != null) {
+    if (Math.abs(audio.currentTime - playback.seekTarget) > 0.5) return;
+    playback.seekTarget = null;
+  }
   playback.lastPosition = audio.currentTime;
   const st = curSplitStart, en = curSplitEnd;
   if (st != null && en != null) {
     if (audio.currentTime >= en) {
       if (playback.current?.preview) { audio.pause(); setPlaybackStatus('试听结束'); return; }
-      if (S.mode === 'single') audio.currentTime = st;
+      if (S.mode === 'single') seekPlayback(st);
       else if (!splitAdvancing) { splitAdvancing = true; Promise.resolve(step(1)).finally(() => { splitAdvancing = false; }); }
       return;
     } // 这首播完，自动接下一首
@@ -2047,13 +2114,15 @@ audio.ontimeupdate = () => {
   $('#dur').textContent = fmt(audio.duration);
 };
 $('#seek').oninput = () => {
-  const st = curSplitStart, en = curSplitEnd;
+  const item = playback.current?.item || playback.requested?.item;
+  const st = item?.split ? item.startSec : null, en = item?.split ? item.endSec : null;
   if (st != null && en != null) {
     // 分歌曲目：拖动只在自己那一段里走
-    audio.currentTime = st + ($('#seek').value / 1000) * (en - st);
+    seekPlayback(st + ($('#seek').value / 1000) * (en - st));
     return;
   }
-  if (audio.duration) audio.currentTime = ($('#seek').value / 1000) * audio.duration;
+  const duration = playbackDuration(item);
+  if (duration) seekPlayback(($('#seek').value / 1000) * duration);
 };
 // 音量走感知曲线：滑块位置 → 音量 = 位置²
 // 线性映射时低端一动就从"还能听"掉到"没声"，平方后低端变化平缓、好微调，高端变化也更明显

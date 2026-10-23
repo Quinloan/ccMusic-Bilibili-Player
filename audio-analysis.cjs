@@ -33,6 +33,26 @@ function splitRms(rms, seconds) {
       from = -1; quiet = 0;
     }
   }
+  // Some edited joins fade almost to digital silence for only 100 ms. Require
+  // a shaped valley with nonzero ramps and substantial audio on both sides;
+  // ordinary short pauses/flat dropouts remain below the 600 ms rule above.
+  for (let i = 2; i + 2 < rms.length; i++) {
+    const level = baselines[i];
+    if (!(level >= 0.01) || !(rms[i] <= 0.0001)) continue;
+    const threshold = Math.min(0.04, level * 0.25);
+    let from = i, to = i + 1;
+    while (from > 0 && i - from < 5 && rms[from - 1] <= threshold) from--;
+    while (to < rms.length && to - i < 5 && rms[to] <= threshold) to++;
+    // The two songs may have very different mastering levels. Require both
+    // flanks to clear the valley threshold, without demanding equal loudness.
+    if (to - from < 3 || to - from > 5 || !(rms[from - 1] >= level * 0.3) || !(rms[to] >= level * 0.3)) continue;
+    const rampFloor = Math.max(0.0005, rms[i] * 5);
+    if (!(rms[from] > rampFloor) || !(rms[to - 1] > rampFloor)) continue;
+    const cut = (i + 0.5) / 10;
+    if (!gaps.some(gap => cut >= gap.from && cut <= gap.to)) gaps.push({ from: cut, to: cut,
+      score: (to - from) / 10 * Math.log(1 + level / Math.max(0.000001, rms[i])) });
+    i = to - 1;
+  }
   const tracks = [];
   let start = 0;
   // Prefer a deeper/longer gap over an earlier weak pause within the minimum track span.

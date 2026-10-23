@@ -136,7 +136,7 @@ function createArtworkResolver({ request = fetch, dispatcher, cacheFile, now = D
   function resolveTitle(input = {}) {
     const intent = songTitleIntent(input);
     if (!intent) return Promise.resolve(null);
-    const key = `title:v${intent.metadataVersion || 2}:` + normalize(input.title) + '|' + normalize(input.parentTitle);
+    const key = `title:v${intent.metadataVersion || 2}:` + normalize(input.title) + '|' + normalize(input.parentTitle) + (input.artist ? '|artist:' + normalize(input.artist) : '');
     if (!input.refresh && cache.get(key)?.expires > now()) return Promise.resolve(cache.get(key).song || (intent.fallback ? { ...intent.fallback, matched: false } : null));
     if (pending.has(key)) { pending.get(key).promote(input.refresh ? 10 : Number(input.priority) || 0); return pending.get(key); }
     if (pending.size >= 200) return Promise.resolve(null);

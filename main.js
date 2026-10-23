@@ -478,9 +478,15 @@ ipcMain.handle('split:release', (e, id) => {
   if (splitSessions.get(id)?.owner.id !== e.sender.id) return false;
   disposeSplitSession(id); return true;
 });
+ipcMain.handle('split:history', (_e, items) => {
+  if (!Array.isArray(items) || items.length > 1000) return [];
+  const cache = require('./analysis-cache.cjs');
+  const file = path.join(app.getPath('userData'), 'split-analysis-cache.json');
+  return cache.getFragmentHistories(file, items);
+});
 async function recognizeSplitTracks(data, confirmed, signal, send) {
   const { samples, secs, audioFile, withLyrics, resourceRoot } = data;
-  const tracks = require('./renderer/library-model.js').validateTracks(confirmed, secs);
+  const tracks = require('./renderer/library-model.js').validateTracks(confirmed, secs, 1);
   const cache = require('./analysis-cache.cjs');
   const cacheFile = path.join(app.getPath('userData'), 'split-analysis-cache.json');
   const warnings = []; let lyricsBlocked = false;
@@ -489,7 +495,7 @@ async function recognizeSplitTracks(data, confirmed, signal, send) {
     const t = tracks[i];
     if (!t.title && !t.checked) {
       const key = createHash('sha256').update(`progressive:${data.bvid}:${data.cid}:${withLyrics}:${t.start}:${t.end}`).digest('hex');
-      const cached = cache.getAnalysis(cacheFile, key)?.tracks?.[0];
+      const cached = t.refresh ? null : cache.getAnalysis(cacheFile, key)?.tracks?.[0];
       const candidates = []; let hit = cached?.title ? { name: cached.title, artist: cached.artist, source: cached.source, referenceArtist: cached.referenceArtist,
         neteaseId: cached.neteaseId, cover: cached.songCover } : null;
       for (const sample of hit ? [] : selectSamples(samples, t)) {
@@ -514,7 +520,8 @@ async function recognizeSplitTracks(data, confirmed, signal, send) {
         if (!cached) { try { cache.saveAnalysis(cacheFile, key, { tracks: [t] }); } catch (error) { console.log('[split:cache]', error.message); } }
       }
     }
-    // Send the metadata before starting the next song. Never merge confirmed cuts.
+    // Keep protocol indices stable. The renderer can reconcile automatic fragments
+    // after each event while preserving explicitly edited/timestamp boundaries.
     t.checked = true;
     send({ stage: 'identify', index: i, track: t, done: i + 1, total: tracks.length });
   }
@@ -560,7 +567,7 @@ ipcMain.handle('split:analyze', async (e, bvid, cid, maxSec, description = '', r
       }
     }
     // Validate before downloading, then validate again against decoded duration.
-    require('./renderer/library-model.js').validateTracks(options.tracks, options.tracks?.at(-1)?.end);
+    require('./renderer/library-model.js').validateTracks(options.tracks, options.tracks?.at(-1)?.end, 1);
   }
   const ffBin = ffmpegPath();
   if (!fs.existsSync(ffBin)) throw new Error('缺少解码组件 ffmpeg-mini.exe');
@@ -570,7 +577,7 @@ ipcMain.handle('split:analyze', async (e, bvid, cid, maxSec, description = '', r
   const withLyrics = lyricTools.lyricsAvailable(resourceRoot);
   const cache = require('./analysis-cache.cjs');
   const cacheFile = !mode && !(maxSec > 0) ? path.join(app.getPath('userData'), 'split-analysis-cache.json') : null;
-  const cacheKey = createHash('sha256').update(`${bvid}:${cid}:${withLyrics}:${description}`).digest('hex');
+  const cacheKey = createHash('sha256').update(`short-fade-v1:${bvid}:${cid}:${withLyrics}:${description}`).digest('hex');
   if (cacheFile) {
     const cached = cache.getAnalysis(cacheFile, cacheKey);
     if (cached) { send({ stage: 'cached', pct: 100 }); return cached; }

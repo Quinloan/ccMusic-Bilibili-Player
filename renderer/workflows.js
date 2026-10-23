@@ -13,18 +13,19 @@ function consumeMetadata(entry, item, apply) {
 }
 function needsSongTitle(item, force = false) {
   if (!item || item.identifySource === 'manual') return false;
-  if (item.split ? item.identifySource !== 'description' : (item.identifySource && item.identifySource !== 'title')) return false;
+  if (item.split ? (!force && item.identifySource !== 'description') : (item.identifySource && item.identifySource !== 'title')) return false;
   const part = item.partTitle || (+item.page || 1) > 1 || (item.vtitle && item.vtitle !== (item.sourceTitle || item.title));
   const duration = LibraryModel.duration(item.duration);
   if (!item.split && !part && (!(duration > 0) || duration >= 600)) return false;
-  const intent = LibraryModel.songTitleIntent({ title: item.sourceTitle || item.partTitle || item.title, parentTitle: part ? item.vtitle : '' });
+  const intent = LibraryModel.songTitleIntent({ title: item.sourceTitle || item.partTitle || item.title, parentTitle: part ? item.vtitle : '', ...(item.split && force && item.artist ? { artist: item.artist } : {}) });
   return !!intent && (force || item.titleMetaVersion !== (intent.metadataVersion || 2));
 }
 function requestSongTitle(item, options = {}) {
   if (!needsSongTitle(item, !!options.force)) return Promise.resolve(null);
   const input = { title: item.sourceTitle || item.partTitle || item.title,
-    parentTitle: item.vtitle !== (item.sourceTitle || item.title) ? item.vtitle || '' : '' };
-  const key = itemKey(item), token = input.title + '|' + input.parentTitle;
+    parentTitle: item.vtitle !== (item.sourceTitle || item.title) ? item.vtitle || '' : '',
+    ...(item.split && options.force && item.artist ? { artist: item.artist } : {}) };
+  const key = itemKey(item), token = input.title + '|' + input.parentTitle + '|' + (input.artist || '');
   let entry = titleRequests.get(key);
   if (entry?.token !== token || Date.now() - entry.at >= 15 * 60000 || (options.force && entry.settled) ||
     (entry.settled && (entry.skipped || (!entry.result?.name && !entry.consumers.has(item))))) {
@@ -48,13 +49,13 @@ function requestSongTitle(item, options = {}) {
     let changed = false;
     for (const candidate of targets) {
       if (candidate.identifySource !== 'manual' && (candidate.sourceTitle || candidate.partTitle || candidate.title) !== input.title) continue;
-      if (!result.matched && candidate.titleMetaVersion >= 2) continue;
+      if (!result.matched && (candidate.titleMetaVersion >= 2 || (candidate.split && candidate.identifySource))) continue;
       entry.applied.add(candidate);
       if (candidate.identifySource !== 'manual') {
         candidate.sourceTitle = input.title;
         candidate.title = String(result.name).trim().slice(0, 500);
         candidate.artist = String(result.artist || '').slice(0, 300);
-        if (candidate.identifySource !== 'description') candidate.identifySource = 'title';
+        if (candidate.identifySource !== 'description' && !(candidate.split && candidate.identifySource)) candidate.identifySource = 'title';
         delete candidate.neteaseId; delete candidate.songCover; delete candidate.titleMetaVersion;
         if (result.matched) candidate.titleMetaVersion = LibraryModel.songTitleIntent(input)?.metadataVersion || 2;
         changed = true;
@@ -77,29 +78,51 @@ function requestSongTitle(item, options = {}) {
 }
 function queueSongTitles(items) { items.forEach(item => requestSongTitle(item)); }
 const metadataParseJobs = new Map();
-function parseSongMetadata(items) {
+async function parseSongMetadata(items) {
+  // Older builds did not persist the constituent cuts. Recover only matching,
+  // unexpired fingerprint cache entries; never infer history from song names alone.
+  const historyCandidates = items.filter(item => item.split && !item.boundaryLocked && ['netease', 'shazam'].includes(item.identifySource) && LibraryModel.fragmentRanges(item).length === 1);
+  if (historyCandidates.length && B.splitHistory) try {
+    const queries = historyCandidates.map(({ bvid, cid, startSec, endSec, title, artist, neteaseId }) => ({ bvid, cid, startSec, endSec, title, artist, neteaseId }));
+    const histories = await B.splitHistory(queries);
+    if (Array.isArray(histories)) for (let i = 0; i < historyCandidates.length; i++) {
+      const item = historyCandidates[i], ranges = histories[i];
+      if (!Array.isArray(ranges) || LibraryModel.fragmentRanges({ ...item, splitFragments: ranges }).length < 2) continue;
+      for (const candidate of [...S.folders.flatMap(f => f.items), ...S.queue]) if (candidate.split && candidate.splitBatch === item.splitBatch && itemKey(candidate) === itemKey(item) && !candidate.boundaryLocked && ['netease', 'shazam'].includes(candidate.identifySource) &&
+        candidate.title === queries[i].title && candidate.artist === queries[i].artist && candidate.neteaseId === queries[i].neteaseId) candidate.splitFragments = ranges;
+    }
+  } catch (_) {} // Missing/expired history keeps the conservative original rule.
+  // Repair already identified duplicates immediately, before catalog lookups queue.
+  for (const batch of new Set(items.filter(item => item.split).map(item => item.splitBatch))) mergeAdjacentIdentified(batch);
+  const live = [...S.folders.flatMap(f => f.items), ...S.queue];
+  items = items.map(item => item.split && !live.includes(item) ? live.find(candidate => candidate.splitBatch === item.splitBatch &&
+    sourceKey(candidate) === sourceKey(item) && candidate.startSec <= item.startSec && candidate.endSec >= item.endSec) || item : item);
   const unique = [...new Map(items.map(item => [itemKey(item), item])).values()];
+  const unnamed = unique.filter(item => item.split && item.identifySource !== 'manual' && !needsSongTitle(item, true));
+  if (unnamed.length) return Promise.all([retrySplitMetadata(unnamed), unique.length > unnamed.length ? parseSongMetadata(unique.filter(item => !unnamed.includes(item))) : Promise.resolve()]);
   const eligible = unique.filter(item => needsSongTitle(item, true));
   if (!eligible.length) { toast(unique.some(item => item.identifySource === 'manual') ? '已保留手动修改的歌曲信息' : '没有明确的单曲标题可供解析'); return Promise.resolve(); }
   const key = eligible.map(itemKey).sort().join('|');
   if (metadataParseJobs.has(key)) { $('#tasksPanel').hidden = false; toast('这些歌曲正在解析中'); return metadataParseJobs.get(key); }
   toast(`正在解析 ${eligible.length} 首，匹配后逐首更新`);
+  const progress = { done: 0, total: eligible.length, title: eligible[0].vtitle || eligible[0].title };
   const job = (async () => {
     let matched = 0, missed = 0;
     for (const item of eligible) {
-      if (![...S.folders.flatMap(f => f.items), ...S.queue].includes(item) || item.identifySource === 'manual') { job.progress.done++; renderTasks(); continue; }
+      if (![...S.folders.flatMap(f => f.items), ...S.queue].includes(item) || item.identifySource === 'manual') { progress.done++; renderTasks(); continue; }
       const result = await requestSongTitle(item, { force: true });
-      job.progress.done++; renderTasks();
+      progress.done++; renderTasks();
       if (item.identifySource === 'manual' || ![...S.folders.flatMap(f => f.items), ...S.queue].includes(item)) continue;
       if (result?.matched) matched++; else missed++;
     }
+    for (const batch of new Set(eligible.filter(item => item.split).map(item => item.splitBatch))) mergeAdjacentIdentified(batch);
     toast(`解析完成，匹配 ${matched} 首${missed ? `，${missed} 首暂未匹配` : ''}`);
     return { matched, missed };
   })().finally(() => {
     metadataParseJobs.delete(key); renderTasks();
     if (!metadataParseJobs.size && !splitTasks.size) $('#tasksPanel').hidden = true;
   });
-  job.progress = { done: 0, total: eligible.length, title: eligible[0].vtitle || eligible[0].title };
+  job.progress = progress;
   metadataParseJobs.set(key, job);
   $('#downloadsPanel').hidden = true; $('#queuePanel').hidden = true; $('#tasksPanel').hidden = false;
   renderTasks(); return job;
@@ -282,6 +305,120 @@ function applyRecognizedTrack(task, index, track) {
     if (needsSongTitle(target)) requestSongTitle(target);
     else requestSongCover(target, { name: track.title, artist: track.artist || track.referenceArtist || '', neteaseId: track.neteaseId });
   }
+  mergeAdjacentIdentified(task.batch);
+}
+function refreshMergedPlayback(current) {
+  if (current) S.qcur = S.queue.indexOf(current);
+  syncCurrentSegment();
+  S.cur = folder()?.items.findIndex(item => current && itemKey(item) === itemKey(current)) ?? -1;
+  updateLibrarySelection();
+  save(); renderFolders(); renderList(); renderQueue(); refreshSongCoverImages();
+}
+function mergeAdjacentIdentified(batch) {
+  if (!batch) return;
+  const operations = [];
+  let current = S.queue[S.qcur];
+  const lists = [...S.folders.map(f => f.items), S.queue];
+  for (const f of S.folders) for (let i = 0; i + 1 < f.items.length; i++) {
+    const left = f.items[i], right = f.items[i + 1];
+    if (left.splitBatch !== batch || !LibraryModel.canMergeFragments(left, right)) continue;
+    const same = (item, ref) => item?.splitBatch === batch && itemKey(item) === itemKey(ref);
+    if (!playback.current && (same(playback.requested?.item, left) || same(playback.requested?.item, right))) continue;
+    if (lists.flat().some(item => (same(item, left) || same(item, right)) && (item.identifySource === 'manual' || item.boundaryLocked))) continue;
+    for (const list of lists) for (let j = 0; j < list.length; j++) {
+      if (!same(list[j], left) && !same(list[j], right)) continue;
+      const old = [list[j]];
+      if (same(list[j], left) && same(list[j + 1], right)) old.push(list[j + 1]);
+      const joined = { ...list[j], ...left, startSec: left.startSec, endSec: right.endSec,
+        duration: +(right.endSec - left.startSec).toFixed(3), songCover: left.songCover || right.songCover,
+        splitFragments: [...LibraryModel.fragmentRanges(left), ...LibraryModel.fragmentRanges(right)] };
+      list.splice(j, old.length, joined); operations.push({ list, old, joined });
+      if (old.includes(current)) current = joined;
+      const selected = old.some(item => librarySelection.has(itemKey(item)));
+      old.forEach(item => librarySelection.delete(itemKey(item)));
+      if (selected) librarySelection.add(itemKey(joined));
+    }
+    i--; // A third short fragment can join the same recording.
+  }
+  if (!operations.length) return;
+  refreshMergedPlayback(current);
+  offerUndo('已合并相邻的同曲片段', () => {
+    let playing = S.queue[S.qcur];
+    for (const { list, old, joined } of operations.slice().reverse()) {
+      if (!lists.includes(list) || (list !== S.queue && !S.folders.some(f => f.items === list))) continue;
+      const at = list.indexOf(joined); if (at < 0) continue; // Never resurrect removed rows.
+      const restored = old.map(item => {
+        item.boundaryLocked = true;
+        if (joined.identifySource === 'manual') Object.assign(item, { title: joined.title, artist: joined.artist, identifySource: 'manual' });
+        return item;
+      });
+      list.splice(at, 1, ...restored);
+      if (playing === joined) playing = restored.find(item => audio.currentTime >= item.startSec && audio.currentTime < item.endSec) || restored[0];
+      const selected = librarySelection.delete(itemKey(joined));
+      if (selected) restored.forEach(item => librarySelection.add(itemKey(item)));
+    }
+    refreshMergedPlayback(playing);
+  });
+}
+function wholeSourceItem(item) {
+  const whole = { ...item, title: item.vtitle || item.title, duration: item.originalDuration || item.endSec };
+  for (const key of ['split', 'splitBatch', 'splitFragments', 'boundaryLocked', 'startSec', 'endSec', 'identifySource', 'artist', 'referenceArtist', 'songCover', 'neteaseId', 'sourceTitle', 'titleMetaVersion']) delete whole[key];
+  return whole;
+}
+async function retrySplitMetadata(items) {
+  const groups = new Map();
+  for (const item of items) {
+    const f = S.folders.find(f => f.items.some(candidate => candidate.split && itemKey(candidate) === itemKey(item)));
+    if (!f) { toast('请先将待识别片段加入歌单'); continue; }
+    const key = f.id + '|' + sourceKey(item) + '|' + (item.splitBatch || '');
+    if (!groups.has(key)) groups.set(key, { f, item, selected: new Set() });
+    groups.get(key).selected.add(itemKey(item));
+  }
+  await Promise.all([...groups.values()].map(async ({ f, item, selected }) => {
+    const active = [...splitTasks.values()].find(task => task.batch && task.batch === item.splitBatch && task.state === 'running');
+    if (active) { $('#tasksPanel').hidden = false; toast('这些片段正在识别中'); return; }
+    if (splitTasks.size >= 20) { toast('任务列表已满，请先处理旧任务'); return; }
+    const parts = f.items.filter(candidate => candidate.split && sourceKey(candidate) === sourceKey(item) && candidate.splitBatch === item.splitBatch).sort((a, b) => a.startSec - b.startSec);
+    const batch = item.splitBatch || uniqueId();
+    for (const candidate of [...parts, ...S.queue.filter(candidate => parts.some(part => itemKey(part) === itemKey(candidate)))]) candidate.splitBatch = batch;
+    const seconds = Number(item.originalDuration) || Math.max(...parts.map(part => part.endSec));
+    const tracks = []; let end = 0;
+    for (const part of parts) {
+      if (part.startSec < end - 0.15) { toast('片段时间有重叠，请先重新分歌'); return; }
+      if (part.startSec > end + 0.15) tracks.push({ start: end, end: part.startSec, checked: true });
+      const retry = selected.has(itemKey(part)) && part.identifySource !== 'manual';
+      tracks.push({ start: part.startSec, end: part.endSec, title: retry ? '' : part.title, artist: part.artist || '',
+        source: part.identifySource, checked: !retry, refresh: retry, boundaryLocked: part.boundaryLocked }); end = part.endSec;
+    }
+    if (end < seconds - 0.15) tracks.push({ start: end, end: seconds, checked: true });
+    const task = { id: uniqueId(), folder: f, item: wholeSourceItem(item), batch, description: '', state: 'ready', result: { tracks, duration: seconds } };
+    splitTasks.set(task.id, task); $('#tasksPanel').hidden = false;
+    await runRecognitionTask(task);
+  }));
+}
+async function resplitVideo(f, item) {
+  const previous = f.items.filter(candidate => candidate.split && sourceKey(candidate) === sourceKey(item));
+  if (!previous.length) return;
+  for (const batch of new Set(previous.map(part => part.splitBatch))) stopBatchRecognition(batch);
+  const original = wholeSourceItem(item);
+  let description = '';
+  try { const meta = await B.video(item.bvid); if ((meta.parts?.length || 1) === 1) description = meta.desc || ''; } catch (_) {}
+  if (!previous.every(part => f.items.includes(part))) return toast('原分段已变更，请重试');
+  return runSplitTask(f, original, description, previous);
+}
+function undoResplit(f, previous, oldQueue, batch) {
+  stopBatchRecognition(batch);
+  const current = S.queue[S.qcur], key = current && itemKey(current);
+  const restore = (list, old) => {
+    const at = list.findIndex(item => item.splitBatch === batch);
+    if (at < 0) return;
+    for (let i = list.length - 1; i >= 0; i--) if (list[i].splitBatch === batch) list.splice(i, 1);
+    list.splice(at, 0, ...old);
+  };
+  if (S.folders.includes(f)) restore(f.items, previous);
+  restore(S.queue, oldQueue.filter(item => previous.some(part => itemKey(part) === itemKey(item))));
+  const playing = current?.splitBatch === batch ? S.queue.find(item => item.split && sourceKey(item) === sourceKey(current) && audio.currentTime >= item.startSec && audio.currentTime < item.endSec) : S.queue.find(item => itemKey(item) === key);
+  refreshMergedPlayback(playing);
 }
 function stopBatchRecognition(batch) {
   if (!batch) return;
@@ -362,7 +499,7 @@ function notifySplitReady(task) {
       return;
     }
     if (task.state !== 'ready') return;
-    if (!S.folders.includes(task.folder) || !task.folder.items.includes(task.item)) return toast('原曲目已移除');
+    if (!splitTaskSourcePresent(task)) return toast('原曲目已移除或变更');
     openSplitReview(task);
   };
   $('#completionNotices').appendChild(notice);
@@ -403,26 +540,30 @@ function renderTasks() {
     } else if (button.dataset.review) { dismissTaskNotice(task.id); openSplitReview(task); }
     else if (button.dataset.retry) {
       if (task.batch) runRecognitionTask(task);
-      else { splitTasks.delete(id); maybeSplit(task.folder, task.item, task.description); }
+      else { splitTasks.delete(id); if (task.previous) runSplitTask(task.folder, task.item, task.description, task.previous); else maybeSplit(task.folder, task.item, task.description); }
     }
     else dismissSplitTask(task);
   };
   try { localStorage.splitTaskDrafts = JSON.stringify(list.filter(task => task.state !== 'done').map(task => ({ folderId: task.folder.id, key: itemKey(task.item),
-    description: task.description, state: task.state, result: task.result, error: task.error, batch: task.batch, original: task.batch ? task.item : undefined }))); } catch (_) {}
+    description: task.description, state: task.state, result: task.result, error: task.error, batch: task.batch, original: task.batch || task.previous ? task.item : undefined,
+    previousKeys: task.previous?.map(itemKey) }))); } catch (_) {}
 }
-async function runSplitTask(f, item, description) {
-  if ([...splitTasks.values()].some(t => t.item === item && ['running', 'ready'].includes(t.state))) { $('#downloadsPanel').hidden = true; $('#queuePanel').hidden = true; $('#tasksPanel').hidden = false; return; }
-  if (!f.items.includes(item)) return;
+function splitTaskSourcePresent(task) {
+  return S.folders.includes(task.folder) && (task.previous ? task.previous.length > 0 && task.previous.every(item => task.folder.items.includes(item)) : task.folder.items.includes(task.item));
+}
+async function runSplitTask(f, item, description, previous = null) {
+  if ([...splitTasks.values()].some(t => (t.item === item || (previous && t.previous && t.folder === f && sourceKey(t.item) === sourceKey(item))) && ['running', 'ready'].includes(t.state))) { $('#downloadsPanel').hidden = true; $('#queuePanel').hidden = true; $('#tasksPanel').hidden = false; return; }
+  if (previous ? !previous.every(part => f.items.includes(part)) : !f.items.includes(item)) return;
   if (splitTasks.size >= 20) { toast('任务列表已满，请先确认或移除旧任务'); return; }
-  const task = { id: uniqueId(), folder: f, item, description, state: 'running' };
+  const task = { id: uniqueId(), folder: f, item, description, previous, state: 'running' };
   splitTasks.set(task.id, task); $('#downloadsPanel').hidden = true; $('#queuePanel').hidden = true; $('#tasksPanel').hidden = false; renderTasks();
   try {
     const result = await B.splitAnalyze(item.bvid, item.cid, undefined, description, task.id, { mode: 'split' });
-    if (task.state === 'cancelled' || !f.items.includes(item) || result.tracks?.length < 2) {
+    if (task.state === 'cancelled' || !splitTaskSourcePresent(task) || result.tracks?.length < 2) {
       if (result.sessionId) B.splitRelease(result.sessionId).catch(() => {});
     }
     if (task.state === 'cancelled') return;
-    if (!f.items.includes(item)) throw new Error('原曲目已移除，请重新添加后分析');
+    if (!splitTaskSourcePresent(task)) throw new Error('原曲目已移除或变更，请重新分析');
     if (result.tracks?.length < 2) throw new Error('没有发现明显分曲间隔，整段已保留');
     task.result = result; task.state = 'ready';
   } catch (error) { if (task.state !== 'cancelled') { task.state = 'error'; task.error = error.message; } }
@@ -436,16 +577,18 @@ function restorePendingTasks() {
     for (const draft of drafts.slice(0, 20)) {
       if (draft.state === 'done') continue;
       const f = draft.batch ? S.folders.find(folder => folder.items.some(item => item.splitBatch === draft.batch)) : S.folders.find(folder => folder.id === draft.folderId);
-      const item = draft.batch ? draft.original : f?.items.find(candidate => itemKey(candidate) === draft.key);
+      const previous = Array.isArray(draft.previousKeys) ? draft.previousKeys.map(key => f?.items.find(item => itemKey(item) === key)) : null;
+      if (previous?.some(item => !item)) continue;
+      const item = draft.batch || previous ? draft.original : f?.items.find(candidate => itemKey(candidate) === draft.key);
       if (!f || !item) continue;
       let state = draft.state === 'ready' ? 'ready' : draft.state === 'cancelled' ? 'cancelled' : 'error';
-      if (draft.batch) LibraryModel.validateTracks(draft.result.tracks, draft.result.duration);
+      if (draft.batch) LibraryModel.validateTracks(draft.result.tracks, draft.result.duration, 1);
       if (state === 'ready') {
         try { LibraryModel.validateTracks(draft.result.tracks, draft.result.duration || draft.result.tracks.at(-1).end); }
         catch (_) { state = 'error'; }
       }
       const task = { id: uniqueId(), folder: f, item, description: String(draft.description || ''), state,
-        result: draft.result, batch: draft.batch, error: draft.error || (draft.batch ? '上次识曲已中断，已加入的曲目保留' : '上次分析已中断，可以重试') };
+        result: draft.result, batch: draft.batch, previous, error: draft.error || (draft.batch ? '上次识曲已中断，已加入的曲目保留' : '上次分析已中断，可以重试') };
       if (task.result) delete task.result.sessionId;
       splitTasks.set(task.id, task);
     }
@@ -478,7 +621,7 @@ async function restoreWholeVideo(f, item) {
   for (const batch of new Set(parts.map(part => part.splitBatch))) stopBatchRecognition(batch);
   const oldQueue = S.queue.slice();
   const original = { ...item, title: item.vtitle || item.title, duration: item.originalDuration || Math.max(...parts.map(part => part.endSec)) };
-  for (const key of ['split', 'splitBatch', 'startSec', 'endSec', 'identifySource', 'artist', 'referenceArtist', 'originalDuration', 'songCover', 'neteaseId', 'sourceTitle', 'partTitle', 'titleMetaVersion']) delete original[key];
+  for (const key of ['split', 'splitBatch', 'splitFragments', 'boundaryLocked', 'startSec', 'endSec', 'identifySource', 'artist', 'referenceArtist', 'originalDuration', 'songCover', 'neteaseId', 'sourceTitle', 'partTitle', 'titleMetaVersion']) delete original[key];
   const batch = uniqueId();
   for (const list of [f.items, S.queue]) for (const candidate of list) if (candidate.split && sourceKey(candidate) === sourceKey(item)) candidate.splitBatch = batch;
   restoreSplitBatch(f, original, batch); save(); renderList(); renderFolders(); renderQueue();
@@ -523,7 +666,7 @@ async function deleteFolder(f) {
 }
 function canReviewSplit(task) {
   return splitTasks.get(task.id) === task && task.state === 'ready' && task.result?.tracks?.length >= 2
-    && S.folders.includes(task.folder) && task.folder.items.includes(task.item);
+    && splitTaskSourcePresent(task);
 }
 function queueSplitReview(task) {
   if (!canReviewSplit(task) || reviewTask?.task === task) return;
@@ -588,7 +731,8 @@ function readReview() {
     const previous = reviewTask.tracks[i];
     const title = row.querySelector('.review-name').value.trim(), end = LibraryModel.duration(row.querySelector('.review-end').value);
     const changed = title !== (previous.title || '');
-    const track = { ...previous, title, start, end, source: changed ? 'manual' : previous.source };
+    const track = { ...previous, title, start, end, source: changed ? 'manual' : previous.source,
+      boundaryLocked: !!previous.boundaryLocked || previous.start !== start || previous.end !== end };
     start = end; return track;
   });
   return LibraryModel.validateTracks(tracks, seconds);
@@ -737,10 +881,11 @@ function initWorkflows() {
     if (!reviewTask) return;
     try {
       const tracks = readReview(), task = reviewTask.task;
-      if (!S.folders.includes(task.folder) || !task.folder.items.includes(task.item)) throw new Error('原视频或歌单已移除，无法应用');
+      if (!splitTaskSourcePresent(task)) throw new Error('原视频或歌单已移除或变更，无法应用');
       task.result = { ...task.result, tracks, named: tracks.filter(t => t.title).length };
       S.active = task.folder.id; showView('library');
-      task.batch = applySplitResult(task.folder, task.item, task.result);
+      task.batch = applySplitResult(task.folder, task.item, task.result, task.previous);
+      task.previous = null;
       stopReviewAudio();
       dismissTaskNotice(task.id); $('#reviewModal').hidden = true; reviewTask = null;
       runRecognitionTask(task);
