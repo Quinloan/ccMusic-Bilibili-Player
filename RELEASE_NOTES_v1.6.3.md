@@ -1,5 +1,13 @@
 # ccMusic v1.6.3
 
+## 下载软件
+
+**[下载解压即用 ZIP：ccMusic-1.6.3-Windows-x64.zip](https://github.com/Quinloan/ccMusic-Bilibili-Player/releases/download/v1.6.3/ccMusic-1.6.3-Windows-x64.zip)**
+
+解压后运行文件夹里的 `ccMusic.exe`，无需先安装。数据仍保存在本机用户目录。ZIP 中的自动更新会下载并转为安装版；如希望继续免安装使用，可手动下载新版 ZIP。
+
+安装版用户可使用下面的 `.exe`；`latest.yml` 由自动更新读取，普通用户不用下载。
+
 **修复补丁**：改善拖动进度后的播放稳定性、音量平衡和智能分歌体验。
 
 ## 功能
