@@ -29,11 +29,11 @@ v1.6.3 为修复补丁：改善频繁拖动后的播放跳转、提高音量平�
 
 以下界面示例沿用 v1.6.2 发布截图。
 
-![首页音乐推荐](https://github.com/Quinloan/ccMusic-Bilibili-Player/releases/download/v1.6.3/01-home.png)
+![首页音乐推荐](https://raw.githubusercontent.com/Quinloan/ccMusic-Bilibili-Player/main/docs/screenshots/01-home.png)
 
-![智能分割与加入歌单](https://github.com/Quinloan/ccMusic-Bilibili-Player/releases/download/v1.6.3/02-smart-split.png)
+![智能分割与加入歌单](https://raw.githubusercontent.com/Quinloan/ccMusic-Bilibili-Player/main/docs/screenshots/02-smart-split.png)
 
-![歌单分组与歌曲资料](https://github.com/Quinloan/ccMusic-Bilibili-Player/releases/download/v1.6.3/03-playlist.png)
+![歌单分组与歌曲资料](https://raw.githubusercontent.com/Quinloan/ccMusic-Bilibili-Player/main/docs/screenshots/03-playlist.png)
 
 ## 数据
 
@@ -51,7 +51,7 @@ npm start
 npm run dist
 ```
 
-资源准备脚本只用于开发/构建，从当前版本发布附件下载固定资源并校验 SHA256，默认不下载 Whisper。终端用户安装后无需执行这些步骤。附带 FFmpeg 精简构建的源码、配方、配置与许可证另见发布附件和 [第三方说明](THIRD-PARTY-NOTICES.md)。
+资源准备脚本只用于开发/构建，从独立开发资源页下载固定资源并校验 SHA256，默认不下载 Whisper。终端用户安装后无需执行这些步骤。附带 FFmpeg 精简构建的源码、配方、配置与许可证另见[开发资源页](https://github.com/Quinloan/ccMusic-Bilibili-Player/releases/tag/build-resources-v1.6.3)和 [第三方说明](THIRD-PARTY-NOTICES.md)。
 
 核心回归示例：`node scripts/test-audio-analysis.cjs`、`node scripts/test-downloads.cjs`、`node scripts/test-playback.cjs`。界面回归需另外安装 Playwright，并通过 `CCMUSIC_PLAYWRIGHT` / `CCMUSIC_BROWSER` 指定库和 Chromium/Edge；使用模拟 IPC/媒体，不启动 Electron 或播放真实音频。部分处理函数回归需要本地测试音频，不随源码分发。
 

@@ -18,3 +18,7 @@ The exact source archive, generated version marker, build recipe, configuration,
 - **KuGou research probe**: the standalone protocol probe references `MakcRe/KuGouMusicApi`. It is not enabled in production recognition or included in the app's runtime file list.
 
 Audio recognition uploads fingerprints. The optional local transcription fallback processes audio on the device and sends selected text phrases to NetEase lyric search. Temporary compressed audio and transcription files are removed when processing finishes or fails. Recognition of a composition by its lyrics does not establish the singer's identity; reference singers are stored separately from the performer field.
+
+## Corresponding source and build resources
+
+Permanent source archives and verified runtime resources are on the [developer resources page](https://github.com/Quinloan/ccMusic-Bilibili-Player/releases/tag/build-resources-v1.6.3). Ordinary software releases contain only the installer and update metadata. For building the old v1.6.3 tag, use the source archive on that page (its resource URL is updated), or the current main branch.
