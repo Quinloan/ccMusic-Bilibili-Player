@@ -20,7 +20,9 @@
     "video-search.cjs",
     "cancellation.cjs",
     "audio-downloads.cjs",
+    "mp3-worker.cjs",
     "download-ipc.cjs",
+    "app-updates.cjs",
     "LICENSE",
     "THIRD-PARTY-NOTICES.md"
   ],

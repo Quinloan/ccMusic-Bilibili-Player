@@ -69,13 +69,13 @@ async function main() {
     const row = { codec: item.name, decodedBytes8k: pcm.length, referenceRmse: rmse, pipeBytes8k: pipe.length, pipeReferenceRmse: pipeRmse };
     const signal = new AbortController().signal;
     const metadata = { title: '修正后的翻唱歌名', artist: '实际翻唱者' };
-    const split = path.join(dir, item.name.replace(/\W/g, '') + '-split.flac');
+    const split = path.join(dir, item.name.replace(/\W/g, '') + '-split.mp3');
     fs.rmSync(split, { force: true });
     await convertAudio({ executable: candidate, input: file, output: split, track: item.track || {}, item: { ...metadata, split: true, startSec: 1, endSec: 2.25 }, signal });
-    assert.equal(decode(candidate, split).length, 20000, item.name + ' exact 1.25s segment');
+    assert(Math.abs(decode(candidate, split).length / 16000 - 1.25) < 0.1, item.name + ' segment with bounded MP3 padding');
     const tags = run(reference, ['-i', split, '-f', 'ffmetadata', 'pipe:1']).toString('utf8');
     assert(tags.includes('title=' + metadata.title)); assert(tags.includes('artist=' + metadata.artist));
-    assert.equal(decode(candidate, split, 16000).length, 40000, item.name + ' transcription 16k input');
+    assert(Math.abs(decode(candidate, split, 16000).length / 32000 - 1.25) < 0.1, item.name + ' MP3 decodes at 16k');
     row.exactSegmentSeconds = 1.25; row.editedTagsRetained = true;
     if (item.track) {
       const output = path.join(dir, item.name.replace(/\W/g, '') + '-whole.' + outputFormat(item.track, false).extension);
@@ -85,14 +85,14 @@ async function main() {
       fs.rmSync(expectedOutput, { force: true });
       await convertAudio({ executable: reference, input: file, output: expectedOutput, track: item.track, item: metadata, signal });
       const remuxPcm = decode(candidate, output);
-      assert(remuxPcm.equals(decode(candidate, expectedOutput)), item.name + ' remux differs from original runtime');
-      const packets = filename => run(reference, ['-i', filename, '-map', '0:a:0', '-c:a', 'copy', '-f', 'data', 'pipe:1']);
-      assert(packets(output).equals(packets(file)), item.name + ' remux changed encoded audio packets');
-      row.remuxRetainsEncodedPackets = true; row.remuxMatchesOriginalRuntime = true; row.remuxDecodedBytes8k = remuxPcm.length;
+      assert(Math.abs(remuxPcm.length - decode(candidate, expectedOutput).length) < 1600, item.name + ' MP3 duration matches reference decoding');
+      assert(Math.abs(remuxPcm.length - pcm.length) < 1600, item.name + ' whole MP3 retains duration');
+      assert.equal(fs.readFileSync(output).toString('ascii', 0, 3), 'ID3');
+      row.mp3Encoded = true; row.mp3DecodedBytes8k = remuxPcm.length;
     }
     report.cases.push(row); console.log('PASS:', item.name);
   }
   fs.writeFileSync(path.join(dir, 'report.json'), JSON.stringify(report, null, 2));
-  console.log('PASS: ' + cases.length + ' codec/container paths; source hashes, build flags, license, standalone Windows execution, analysis pipe, resampling, exact splits, edited tags, whole-audio copy');
+  console.log('PASS: ' + cases.length + ' codec/container paths; source hashes, build flags, license, standalone decoding, analysis pipe, resampling, MP3 split padding, edited tags and whole-song encoding');
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

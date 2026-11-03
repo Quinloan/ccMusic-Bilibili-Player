@@ -481,6 +481,14 @@ function dismissSplitTask(task, automatic = false) {
   renderTasks();
   if (automatic && !splitTasks.size && !metadataParseJobs.size) $('#tasksPanel').hidden = true;
 }
+function cancelSplitTask(task) {
+  if (task.state !== 'running') return;
+  task.state = 'cancelled';
+  const requestId = task.runId || task.id; task.runId = null;
+  // Remove immediately; the cancelled state also guards late async results.
+  B.splitCancel(requestId).catch(() => {});
+  dismissSplitTask(task);
+}
 function notifySplitReady(task) {
   dismissTaskNotice(task.id);
   if (task.state === 'ready') { queueSplitReview(task); return; }
@@ -516,6 +524,9 @@ function renderTasks() {
   const state = list.some(task => task.state === 'error') ? 'error' : list.some(task => task.state === 'ready') ? 'attention' : list.some(task => task.state === 'running') || metadataParseJobs.size ? 'running' : 'idle';
   setActivityIndicator('#taskBtn', state, '后台任务');
   $('#taskEmpty').hidden = !!(list.length || metadataParseJobs.size);
+  $('#tasksTools').hidden = !list.length;
+  $('#tasksCancelAll').disabled = !list.some(task => task.state === 'running');
+  $('#tasksClear').disabled = !list.some(task => ['done', 'error', 'cancelled'].includes(task.state));
   const metadataCards = [...metadataParseJobs.values()].map(job => `<div class="task-card"><strong>${esc(job.progress.title)}</strong><small>正在解析歌曲信息 ${job.progress.done}/${job.progress.total}</small><progress max="${job.progress.total}" value="${job.progress.done}"></progress></div>`).join('');
   $('#taskList').innerHTML = metadataCards + list.map(task => {
     const p = task.progress || {};
@@ -534,9 +545,7 @@ function renderTasks() {
     const id = button.dataset.cancel || button.dataset.review || button.dataset.retry || button.dataset.dismiss;
     const task = splitTasks.get(id); if (!task) return;
     if (button.dataset.cancel) {
-      task.state = 'cancelled'; renderTasks();
-      const requestId = task.runId || id; task.runId = null;
-      await B.splitCancel(requestId).catch(() => {});
+      cancelSplitTask(task);
     } else if (button.dataset.review) { dismissTaskNotice(task.id); openSplitReview(task); }
     else if (button.dataset.retry) {
       if (task.batch) runRecognitionTask(task);
@@ -833,6 +842,8 @@ function initWorkflows() {
   setPlayIcon(false); setModeIcon(); showSearchHistory();
   $('#taskBtn').onclick = () => { $('#downloadsPanel').hidden = true; $('#queuePanel').hidden = true; $('#tasksPanel').hidden = !$('#tasksPanel').hidden; renderTasks(); };
   $('#tasksClose').onclick = () => { $('#tasksPanel').hidden = true; };
+  $('#tasksCancelAll').onclick = () => { for (const task of [...splitTasks.values()]) cancelSplitTask(task); };
+  $('#tasksClear').onclick = () => { for (const task of [...splitTasks.values()]) if (['done', 'error', 'cancelled'].includes(task.state)) dismissSplitTask(task); };
   $('#undoButton').onclick = () => { const action = undoAction; dismissUndo(); if (action) { action(); save(); renderFolders(); renderList(); renderQueue(); } };
   $('#undoClose').onclick = dismissUndo;
   $('#undoBar').onmouseenter = pauseUndoTimer;

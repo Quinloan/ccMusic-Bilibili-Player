@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('api', {
   downloadStart: (items, allowLimited = false) => ipcRenderer.invoke('download:start', items, allowLimited),
   downloadRetry: (id, allowLimited = false) => ipcRenderer.invoke('download:retry', id, allowLimited),
   downloadList: () => ipcRenderer.invoke('download:list'),
+  downloadManage: (action, batchId) => ipcRenderer.invoke('download:manage', action, batchId),
   downloadCancel: id => ipcRenderer.invoke('download:cancel', id),
   downloadDismiss: id => ipcRenderer.invoke('download:dismiss', id),
   downloadReveal: id => ipcRenderer.invoke('download:reveal', id),
@@ -52,6 +53,11 @@ contextBridge.exposeInMainWorld('api', {
   diagOpenData: () => ipcRenderer.invoke('diag:openData'),
   diagExport: () => ipcRenderer.invoke('diag:export'),
   checkUpdate: () => ipcRenderer.invoke('update:check'),
+  updateState: () => ipcRenderer.invoke('update:state'),
+  updateConfigure: on => ipcRenderer.invoke('update:configure', on),
+  updateDownload: () => ipcRenderer.invoke('update:download'),
+  updateInstall: () => ipcRenderer.invoke('update:install'),
+  onUpdateState: callback => ipcRenderer.on('update:state', (_event, state) => callback(state)),
   getVersion: () => ipcRenderer.invoke('app:version'),
 
   // 登录

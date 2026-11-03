@@ -327,7 +327,7 @@ async function getPlayurl(bvid, cid, refresh = false) {
 
 ipcMain.handle('bili:playurl', (_e, bvid, cid, refresh) => getPlayurl(bvid, cid, !!refresh));
 
-require('./download-ipc.cjs').registerDownloads({
+const downloadManager = require('./download-ipc.cjs').registerDownloads({
   app, ipcMain, dialog, BrowserWindow, shell, getLoginState, getPlayurl,
   executable: path.join(app.isPackaged ? process.resourcesPath : path.join(__dirname, 'resources'), 'download-audio', 'ffmpeg.exe'),
   resolveItem: async item => {
@@ -907,83 +907,25 @@ ipcMain.handle('diag:export', () => {
   return file;
 });
 
-// ---------------------------------------------------------------- 检查更新
-function cmpVer(a, b) {
-  const pa = String(a).split('.').map(Number);
-  const pb = String(b).split('.').map(Number);
-  for (let i = 0; i < 3; i++) {
-    const x = pa[i] || 0, y = pb[i] || 0;
-    if (x !== y) return x > y ? 1 : -1;
-  }
-  return 0;
-}
-
-ipcMain.handle('update:check', async () => {
-  const current = appVersion();
-  const repo = GITHUB_REPO;
-  try {
-    const r = await ufetch(`https://api.github.com/repos/${repo}/releases/latest`, {
-      headers: { 'User-Agent': 'ccMusic', Accept: 'application/vnd.github+json' },
-      dispatcher: agent,
-    });
-    if (r.status === 404) return { current, repo, ok: false, error: '还没有发布过 Release' };
-    const j = await r.json().catch(() => null);
-    if (!j || !j.tag_name) return { current, repo, ok: false, error: '获取版本信息失败' };
-    const latest = String(j.tag_name).replace(/^v/, '');
-    return {
-      current,
-      repo,
-      ok: true,
-      hasUpdate: cmpVer(latest, current) > 0,
-      latest,
-      url: j.html_url,
-      notes: String(j.body || '').slice(0, 400),
-    };
-  } catch (e) {
-    return { current, repo, ok: false, error: e.message };
-  }
-});
-
-// ---------------------------------------------------------------- 自动更新
-// 打包环境下通过 electron-updater 检查 GitHub Releases，后台静默下载，
-// 下载完成后弹窗询问是否立即重启；即使不点，退出时也会自动装好新版。
+// ---------------------------------------------------------------- 应用内更新
+let appUpdates;
+ipcMain.handle('update:state', () => appUpdates.snapshot());
+ipcMain.handle('update:check', () => appUpdates.check());
+ipcMain.handle('update:configure', (_event, on) => appUpdates.configure(on));
+ipcMain.handle('update:download', () => appUpdates.download());
+ipcMain.handle('update:install', () => appUpdates.install());
 function setupAutoUpdater() {
-  if (!app.isPackaged) return;
-  let autoUpdater;
-  try {
-    ({ autoUpdater } = require('electron-updater'));
-  } catch (e) {
-    console.error('[updater] 模块缺失:', e.message);
-    return;
-  }
-  autoUpdater.autoDownload = true;
-  autoUpdater.autoInstallOnAppQuit = true;
-  let asking = false;
-  autoUpdater.on('update-downloaded', (info) => {
-    if (asking) return;
-    asking = true;
-    dialog
-      .showMessageBox({
-        type: 'info',
-        title: 'ccMusic 更新',
-        message: '新版本 v' + info.version + ' 已下载完成',
-        detail: '重启应用即可完成更新，歌单与登录不受影响。',
-        buttons: ['立即重启更新', '下次启动再说'],
-        defaultId: 0,
-        cancelId: 1,
-        noLink: true,
-      })
-      .then(({ response }) => {
-        asking = false;
-        if (response === 0) autoUpdater.quitAndInstall(true, true);
-      })
-      .catch(() => (asking = false));
+  const updater = app.isPackaged ? require('electron-updater').autoUpdater : null;
+  appUpdates = require('./app-updates.cjs').createAppUpdates({
+    updater, version: appVersion(), preferences: path.join(app.getPath('userData'), 'update-settings.json'),
+    emit: state => { for (const win of BrowserWindow.getAllWindows()) if (!win.isDestroyed()) win.webContents.send('update:state', state); },
+    beforeInstall: async () => {
+      if (downloadManager.hasPending() || splitJobs.size) throw Error('请先完成或取消下载、分歌和识曲任务，再重启更新');
+      quitting = true;
+    },
+    installFailed: () => { quitting = false; },
   });
-  autoUpdater.on('error', (e) => console.error('[updater]', e.message));
-  const check = () =>
-    autoUpdater.checkForUpdates().catch((e) => console.error('[updater]', e.message));
-  setTimeout(check, 15000); // 启动 15 秒后首次检查，避开启动高峰
-  setInterval(check, 4 * 60 * 60 * 1000); // 之后每 4 小时
+  app.on('will-quit', () => appUpdates.dispose());
 }
 
 // ---------------------------------------------------------------- 托盘 & 全局媒体键
@@ -1163,8 +1105,8 @@ app.whenReady().then(async () => {
     Menu.setApplicationMenu(null);
   } catch (e) {}
   // 关键：先出界面，网络库与会话预热放到首屏之后，避免阻塞启动
-  createWindow();
   setupAutoUpdater();
+  createWindow();
   setupTray();
   applyMediaKeys(); // 默认开启，渲染端读完设置后会再同步一次
   app.on('before-quit', () => globalShortcut.unregisterAll());

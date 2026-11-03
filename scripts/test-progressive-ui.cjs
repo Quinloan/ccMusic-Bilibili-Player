@@ -8,7 +8,7 @@ async function run() {
   try {
     const page = await browser.newPage({ viewport: { width: 1280, height: 820 }, serviceWorkers: 'block' });
     const errors = []; page.on('pageerror', error => errors.push(error.message));
-    const allowed = ['/renderer/index.html', '/renderer/style.css', '/renderer/app.js', '/renderer/downloads.js', '/renderer/workflows.js', '/renderer/library-model.js', '/renderer/volume-balance.js', '/renderer/music-search-policy.js', '/assets/icon.png'];
+    const allowed = ['/renderer/index.html', '/renderer/style.css', '/renderer/app.js', '/renderer/downloads.js', '/renderer/workflows.js', '/renderer/library-model.js', '/renderer/volume-balance.js', '/renderer/music-search-policy.js', '/renderer/history.js', '/assets/icon.png'];
     await page.route('**/*', route => {
       const name = new URL(route.request().url()).pathname;
       if (!allowed.includes(name)) return route.abort();
@@ -71,7 +71,9 @@ async function run() {
     await page.evaluate(() => window.testRecognitionRequests[0].emit(0, { title: '取消后的迟到结果', source: 'netease' }));
     assert.equal(await page.evaluate(() => folder().items[0].title), '第一首已识别');
     assert.equal(await page.evaluate(() => folder().items.length), 3);
-    await page.locator('[data-retry]').click();
+    assert.equal(await page.evaluate(() => splitTasks.size), 0, 'cancel also removes the task card');
+    // Resume through the library parse action after cancellation, retaining confirmed metadata.
+    await page.evaluate(() => { void retrySplitMetadata([folder().items.at(-1)]); });
     await page.waitForFunction(() => window.testRecognitionRequests.length === 2);
     assert.equal(await page.evaluate(() => window.testRecognitionRequests[1].options.tracks[0].title), '第一首已识别');
     assert.equal(await page.evaluate(() => window.testRecognitionRequests[1].options.tracks[1].source), 'manual');

@@ -1,5 +1,9 @@
 # Recognition components
 
+## MP3 download encoding
+
+Downloads use the unchanged `wasm-media-encoders` 0.7.0 package in a separate worker. Its JavaScript wrapper is MIT; the compiled LAME encoder is LGPL. The original package license is kept in production dependencies. Source and rebuild recipe: https://github.com/arseneyr/wasm-media-encoders/tree/v0.7.0 . The Node entry point embeds the WASM and works offline; it does not download code from a CDN at runtime. This module is separate from the LGPL-2.1 FFmpeg executable; no FFmpeg binary or build configuration was changed for MP3 support. MP3 is lossy, including when the input source is FLAC. The previous JavaScript lamejs dependency has been removed.
+
 ## Analysis decoder
 
 `resources/ffmpeg-mini.exe` is the existing separate, replaceable FFmpeg 7.1 Windows audio decoder, licensed LGPL-2.1-or-later. Its LGPL text, build configuration and source revision/hash are bundled in `ffmpeg-mini-licenses/`; the corresponding FFmpeg 7.1 source and `.github/workflows/build-mini-ffmpeg.yml` recipe are provided in the release attachment `ccMusic-FFmpeg-mini-source-7.1.zip`.
@@ -21,4 +25,4 @@ Audio recognition uploads fingerprints. The optional local transcription fallbac
 
 ## Corresponding source and build resources
 
-Permanent source archives and verified runtime resources are on the [developer resources page](https://github.com/Quinloan/ccMusic-Bilibili-Player/releases/tag/build-resources-v1.6.3). Ordinary software releases contain only the installer and update metadata. For building the old v1.6.3 tag, use the source archive on that page (its resource URL is updated), or the current main branch.
+Permanent FFmpeg source archives and verified runtime resources are on the [developer resources page](https://github.com/Quinloan/ccMusic-Bilibili-Player/releases/tag/build-resources-v1.6.3). The unchanged decoder binaries are also used in v1.7.0. Ordinary software releases contain the ready-to-run ZIP, installer and update metadata. The MP3 encoder package, license and upstream source/rebuild link are documented above. For building the old v1.6.3 tag, use the source archive on the developer page (its resource URL is updated), or a newer tagged source tree.

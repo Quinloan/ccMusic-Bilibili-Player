@@ -463,14 +463,14 @@ button.primary:hover { opacity: .9; color: #fff; }
   font-size: 10px; line-height: 15px; text-align: center;
 }
 /* 侧栏首页入口 */
-.home-nav {
+.home-nav, .history-nav {
   display: flex; align-items: center; gap: 8px; margin: 0 8px 4px;
   padding: 7px 12px; border-radius: 8px; cursor: pointer; font-size: 13px;
 }
-.home-nav:hover { background: var(--bg); }
-.home-nav.on { background: var(--accent-soft); color: var(--accent); }
-.home-nav svg { flex: 0 0 16px; color: var(--muted); }
-.home-nav.on svg { color: var(--accent); }
+.home-nav:hover, .history-nav:hover { background: var(--bg); }
+.home-nav.on, .history-nav.on { background: var(--accent-soft); color: var(--accent); }
+.home-nav svg, .history-nav svg { flex: 0 0 16px; color: var(--muted); }
+.home-nav.on svg, .history-nav.on svg { color: var(--accent); }
 
 /* 首页（只有音乐区热门） */
 .home-sec { margin-bottom: 28px; }
@@ -716,3 +716,30 @@ button.primary:hover { opacity: .9; color: #fff; }
 .completion-notice small { color:var(--muted); }
 .completion-notice .notice-close { position:absolute; top:9px; right:10px; border:0; background:transparent; color:var(--muted); }
 .completion-notice .notice-review { display:block; margin:12px 0 0 auto; padding:5px 12px; background:var(--accent-soft); color:var(--accent); border:0; border-radius:7px; }
+.history-list { overflow:auto; flex:1; min-height:0; padding:0 22px 20px; }
+.history-row { gap:12px; }
+.history-meta { flex:1; min-width:0; }
+.history-title { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-bottom:5px; }
+.history-row time { font-size:12px; white-space:nowrap; }
+.download-batch-head { position:sticky; top:0; z-index:1; background:var(--panel); padding:4px 2px 12px; }
+.download-batch-head strong { font-size:13px; font-weight:600; }
+.download-batch-head small { display:block; margin:6px 0; color:var(--muted); font-size:12px; }
+.download-batch-head progress { width:100%; accent-color:var(--accent); }
+.download-source-status { margin-top:8px; color:var(--muted); font-size:12px; }
+.download-source-status progress { display:block; margin-top:5px; }
+.download-batch + .download-batch { margin-top:16px; }
+.task-toolbar { display:flex; flex-shrink:0; gap:8px; padding:9px 14px; border-bottom:1px solid var(--line); }
+.task-toolbar button, .batch-actions button { padding:5px 9px; font-size:12px; }
+.task-toolbar button:disabled { opacity:.4; cursor:default; }
+.batch-actions { display:flex; gap:8px; margin-top:8px; }
+.app-update-card { margin-top:12px; padding:16px; border:1px solid var(--line); border-radius:12px; }
+.app-update-card progress { display:block; width:100%; margin:12px 0 6px; accent-color:var(--accent); }
+.app-update-card p { font-size:13px; margin:10px 0; }
+.app-update-card > button { margin-top:14px; }
+.update-notes { margin-top:12px; font-size:13px; }
+.update-notes summary { cursor:pointer; color:var(--muted); }
+.update-notes pre { font:inherit; white-space:pre-wrap; overflow-wrap:anywhere; max-height:220px; overflow:auto; user-select:text; }
+.update-error { color:#b63a53; overflow-wrap:anywhere; }
+.update-portable-tip { display:block; font-size:12px; margin-top:12px; }
+.app-update-notice { position:fixed; z-index:25; right:22px; top:70px; display:flex; align-items:center; gap:12px; padding:12px 16px; max-width:calc(100vw - 44px); border:1px solid var(--line); border-radius:12px; background:var(--panel); box-shadow:0 8px 32px #0002; font-size:13px; }
+.app-update-notice button { padding:5px 9px; }

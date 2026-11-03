@@ -22,6 +22,9 @@ function mockBridge(options = {}) {
   HTMLMediaElement.prototype.pause = function () { this._playing = false; this.dispatchEvent(new Event('pause')); };
   HTMLMediaElement.prototype.load = function () {};
   window.api = new Proxy({
+    updateState: async () => ({ current: '1.6.3', supported: false, autoCheck: false, status: 'idle' }),
+    updateConfigure: async autoCheck => ({ current: '1.6.3', supported: false, autoCheck, status: 'idle' }),
+    onUpdateState: callback => { window.emitAppUpdate = callback; },
     resolveSongTitle: async input => {
       if (!window.testHoldTitles) { window.testTitleRequests.push({ input }); return null; }
       return new Promise(resolve => window.testTitleRequests.push({ input, resolve }));
@@ -78,7 +81,7 @@ async function run() {
   try {
     const page = await browser.newPage({ viewport: { width: 1280, height: 820 }, serviceWorkers: 'block' });
     const errors = []; page.on('pageerror', error => errors.push(error.message));
-    const routes = new Map(['/renderer/index.html', '/renderer/style.css', '/renderer/app.js', '/renderer/downloads.js', '/renderer/workflows.js', '/renderer/library-model.js', '/renderer/volume-balance.js', '/renderer/music-search-policy.js', '/assets/icon.png'].map(url => [url, path.join(root, url)]));
+    const routes = new Map(['/renderer/index.html', '/renderer/style.css', '/renderer/app.js', '/renderer/downloads.js', '/renderer/workflows.js', '/renderer/library-model.js', '/renderer/volume-balance.js', '/renderer/music-search-policy.js', '/renderer/history.js', '/assets/icon.png'].map(url => [url, path.join(root, url)]));
     await page.route('**/*', route => {
       const file = routes.get(new URL(route.request().url()).pathname);
       if (!file) return route.abort();
@@ -134,7 +137,8 @@ async function run() {
     assert.equal(await page.evaluate(() => document.querySelector('#downloadsPanel').getBoundingClientRect().bottom <= document.querySelector('.bar').getBoundingClientRect().top), true, 'download panel must leave playback controls accessible');
     await page.locator('[data-dl-cancel]').click();
     assert.equal(await page.locator('#downloadsBtn').getAttribute('data-state'), 'idle');
-    await page.locator('[data-dl-dismiss]').click(); await page.locator('#downloadsClose').click();
+    await page.waitForFunction(() => !downloadTasks.size);
+    await page.locator('#downloadsClose').click();
     await page.locator('#results [data-download="0"]').click(); await page.locator('#downloadLoginGo').click();
     await page.locator('#loginModal:not([hidden])').waitFor();
     await page.locator('#downloadsPanel:not([hidden])').waitFor();
@@ -243,7 +247,8 @@ async function run() {
     await page.locator('[data-cancel]').click();
     await page.waitForTimeout(550);
     assert.equal(await page.evaluate(() => S.folders[1].items.length), 1, 'cancelled task cannot change library');
-    await page.locator('[data-dismiss]').click(); await page.locator('#tasksClose').click();
+    assert.equal(await page.evaluate(() => splitTasks.size), 0, 'cancel removes task feedback without a second click');
+    await page.locator('#tasksClose').click();
     await page.screenshot({ path: path.join(root, 'validation/ui-library.png') });
     await page.setViewportSize({ width: 960, height: 700 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
@@ -417,7 +422,12 @@ async function run() {
     assert.equal(await page.evaluate(() => folder().items[0].title), '持久化的新歌名');
     assert.equal(await page.evaluate(() => S.queue[0].artist), '');
     assert.equal(await page.evaluate(() => S.queue[0].identifySource), 'manual');
-    console.log('PASS: real DOM startup and existing workflows; collapsed/expanded split and multi-P group removal, nested button target, cancel/undo, group play/context menu; downloads and arbitrary subsets; saved song metadata sync/undo/persistence, 900px layout; IPC and media mocked');
+    await page.evaluate(() => { emitDownload({ id: 'waiting-conversion-test', title: '已下载的歌曲', state: 'waiting-conversion', pct: 0 }); showDownloads(); });
+    assert.equal(await page.getByText('已下载，等待转换', { exact: true }).isVisible(), true);
+    assert.equal(await page.locator('[data-dl-cancel="waiting-conversion-test"]').isVisible(), true);
+    await page.locator('[data-dl-cancel="waiting-conversion-test"]').click();
+    await page.waitForFunction(() => !downloadTasks.has('waiting-conversion-test'));
+    console.log('PASS: real DOM startup and existing workflows; collapsed/expanded split and multi-P group removal, nested button target, cancel/undo, group play/context menu; downloads and arbitrary subsets, queued conversion status/cancel; saved song metadata sync/undo/persistence, 900px layout; IPC and media mocked');
   } finally { await browser.close(); }
 }
 if (require.main === module) run().catch(error => { console.error(error); process.exitCode = 1; });

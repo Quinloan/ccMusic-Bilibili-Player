@@ -19,6 +19,7 @@
       <svg viewBox="0 0 20 20" width="16" height="16" fill="currentColor"><path d="M10 2.6 2.5 8.4V17a.8.8 0 0 0 .8.8H8v-5.2h4V17.8h4.7a.8.8 0 0 0 .8-.8V8.4L10 2.6Z"/></svg>
       <span>首页</span>
     </div>
+    <div class="nav-item history-nav" data-view="history"><svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="10" cy="10" r="7"/><path d="M10 5v5l3 2"/></svg><span>最近播放</span></div>
     <div class="side-label">我的歌单</div>
     <div id="folders" class="folders"></div>
     <div class="newfolder">
@@ -73,6 +74,11 @@
         </div>
       </section>
 
+      <section id="view-history" class="view" hidden>
+        <div class="view-head"><h2>最近播放</h2><div class="head-right"><span id="historyCount" class="muted"></span><button id="historyClear">清空历史</button></div></div>
+        <div class="library-tools"><input id="historyFilter" type="search" placeholder="在历史中查找" aria-label="查找播放历史" /></div>
+        <div id="historyList" class="history-list"></div>
+      </section>
       <section id="view-library" class="view">
         <div class="view-head">
           <h2 id="libTitle">我的歌单</h2>
@@ -180,6 +186,7 @@
 
   <aside id="downloadsPanel" class="qpanel downloads-panel" hidden aria-label="音频下载">
     <div class="download-head"><strong>音频下载</strong><span class="grow"></span><button id="downloadCurrent">下载当前歌曲</button><button id="downloadsClose" aria-label="关闭下载面板">×</button></div>
+    <div id="downloadsTools" class="task-toolbar" hidden><button id="downloadsCancelAll">取消全部</button><button id="downloadsClear">清理已结束</button></div>
     <p id="downloadsEmpty" class="empty">还没有下载任务，可在搜索结果或歌单中点击「下载」。</p>
     <div id="downloadsList"></div>
   </aside>
@@ -200,6 +207,7 @@
   </aside>
   <aside id="tasksPanel" class="qpanel tasks-panel" hidden>
     <div class="qp-head"><b>后台任务</b><span class="grow"></span><button id="tasksClose" class="q-close" title="收起任务">×</button></div>
+    <div id="tasksTools" class="task-toolbar" hidden><button id="tasksCancelAll">取消分歌与识曲</button><button id="tasksClear">清理已结束</button></div>
     <div id="taskEmpty" class="empty">暂无任务</div><div id="taskList" class="task-list"></div>
   </aside>
 </div>
@@ -381,16 +389,15 @@
         </div>
       </div>
 
-      <div class="sec">
-        <div class="sec-title">更新设置</div>
-        <div class="sec-desc">新版本自动检查下载，完成后提示重启更新</div>
+      <div class="sec" id="updateSettings">
+        <div class="sec-title">软件更新</div>
         <div class="card">
           <div class="row-line">
             <div class="rl-main"><b>检查更新</b><div class="muted">从 GitHub Releases 检查新版本</div></div>
             <div class="rl-actions"><button id="checkBtn">检查更新</button></div>
           </div>
           <div class="row-line">
-            <div class="rl-main"><b>自动检查</b><div class="muted">启动后自动检查并后台下载新版本</div></div>
+            <div class="rl-main"><b>自动检查</b><div class="muted">发现新版本时提醒，确认后下载</div></div>
             <div class="rl-actions">
               <label class="switch"><input type="checkbox" id="autoCheck" /><span class="slider"></span></label>
             </div>
@@ -454,11 +461,13 @@
     <div class="download-login-actions"><button id="downloadLoginCancel">取消</button><button id="downloadLimited">继续当前可用音质</button><button id="downloadLoginGo" class="primary">去登录</button></div>
   </div>
 </div>
+<div id="appUpdateNotice" class="app-update-notice" hidden role="status"><span id="appUpdateNoticeText"></span><button id="appUpdateNoticeOpen">查看更新</button><button id="appUpdateNoticeClose" aria-label="关闭更新提醒">×</button></div>
 <script src="music-search-policy.js"></script>
 <script src="library-model.js"></script>
 <script src="volume-balance.js"></script>
 <script src="workflows.js"></script>
 <script src="downloads.js"></script>
+<script src="history.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -21,6 +21,7 @@ const S = {
   page: 1,
   hasMore: false,
   hot: [],     // 首页：B 站音乐区热门
+  history: [],
 };
 
 const esc = (s) =>
@@ -42,7 +43,7 @@ const folder = () => S.folders.find((f) => f.id === S.active);
 const songArtist = item => Object.hasOwn(item, 'artist') ? String(item.artist || '') : item.up || item.author || '';
 const save = () =>
   B.setLibrary({
-    folders: S.folders, active: S.active, queue: S.queue, qcur: S.qcur,
+    folders: S.folders, active: S.active, queue: S.queue, qcur: S.qcur, history: S.history,
   });
 
 let toastTimer;
@@ -58,7 +59,7 @@ function toast(msg) {
   toastTimer = setTimeout(() => el.classList.remove('show'), 2400);
 }
 
-const VIEWS = ['home', 'library', 'search', 'diag', 'about'];
+const VIEWS = ['home', 'library', 'search', 'history', 'diag', 'about'];
 const viewStack = []; // 视图历史，返回按钮用
 function showView(v, opts) {
   if (!VIEWS.includes(v)) v = 'library';
@@ -75,6 +76,7 @@ function showView(v, opts) {
   scheduleVisibleSongCovers();
   if (v === 'search') scheduleSearchMore();
   if (v === 'home') scheduleHomeMore();
+  if (v === 'history') renderPlayHistory();
 }
 // 返回上一视图；没有历史时提示
 function goBack() {
@@ -118,6 +120,7 @@ function idFromUrl(u) {
 async function init() {
   mark('init 开始');
   const lib = await B.getLibrary();
+  S.history = cleanPlayHistory(lib?.history);
   mark('收藏数据已返回');
   if (lib?.folders?.length) {
     S.folders = lib.folders;
@@ -277,8 +280,7 @@ function openAccountMenu() {
           toast('已退出登录');
           checkLogin();
         } else if (act === 'update') {
-          showView('about');
-          doCheck(false);
+          openUpdateSettings();
         }
       };
     });
@@ -1283,7 +1285,7 @@ async function openSettings() {
   // 打开时同步一次真实状态，避免和主进程 / 底部按钮不一致
   $('#mediaKeys').checked = localStorage.mediaKeys !== '0';
   $('#closeAction').value = localStorage.closeToTray !== '0' ? 'tray' : 'quit';
-  $('#autoCheck').checked = localStorage.autoCheck !== '0';
+  $('#autoCheck').checked = appUpdateState?.autoCheck ?? localStorage.autoCheck !== '0';
   $('#prefFlac').checked = localStorage.prefFlac === '1';
   $('#volumeBalance').checked = localStorage.volumeBalance !== '0';
   $('#lastCheck').textContent = localStorage.lastCheckAt || '从未';
@@ -1684,6 +1686,7 @@ async function playTrack(it, idx, options = {}) {
     syncQualityBtn();
     setPlayIcon(true);
     setPlaybackStatus('播放中');
+    if (!options.recovery && !options.preview && typeof recordPlayHistory === 'function') recordPlayHistory(it);
     B.setTrayTip(it.title); // 托盘悬停时显示当前曲目
     if (it.split) mergeAdjacentIdentified(it.splitBatch);
     renderList();
@@ -1818,41 +1821,63 @@ async function runDiag() {
   }
 }
 
-function renderUpdateBanner(el, r) {
-  if (!el) return;
-  el.hidden = false;
-  el.innerHTML = `<div class="ub-main"><b>发现新版本 ${esc(r.latest)}</b>
-      <span class="muted">当前版本 ${esc(r.current)}，前往 GitHub 下载安装包。</span></div>
-    <div class="ub-actions"><button class="primary">前往下载</button></div>`;
-  el.querySelector('button').onclick = () => B.openExternal(r.url);
+let appUpdateState = null, updateNoticeVersion = '';
+function openUpdateSettings() {
+  openSettings(); $('#updateSettings').scrollIntoView({ block: 'start' });
+  if (!appUpdateState || ['idle', 'latest', 'error'].includes(appUpdateState.status)) void doCheck().then(() => $('#updateResult').scrollIntoView({ block: 'nearest' }));
+  else $('#updateResult').scrollIntoView({ block: 'nearest' });
 }
-
-function hideUpdateBanners() {
-  $('#aboutUpdateBanner').hidden = true;
-  $('#diagUpdateBanner').hidden = true;
-}
-
-function showUpdateMsg(text) {
-  $('#updateResult').innerHTML = `<div class="ub-msg">${esc(text)}</div>`;
-}
-
-async function doCheck(silent = false) {
-  const r = await B.checkUpdate();
-  if (!r.ok) {
-    if (!silent) showUpdateMsg('检查失败：' + r.error + `\n（仓库：${r.repo}）`);
-    return r;
+function renderAppUpdate(state) {
+  if (!state?.status) return;
+  if (Number.isFinite(state.revision) && Number.isFinite(appUpdateState?.revision) && state.revision < appUpdateState.revision) return;
+  appUpdateState = state;
+  if (typeof state.autoCheck === 'boolean') { localStorage.autoCheck = state.autoCheck ? '1' : '0'; $('#autoCheck').checked = state.autoCheck; }
+  const busy = ['checking', 'downloading', 'restarting'].includes(state.status);
+  $('#checkBtn').disabled = busy || !state.supported;
+  if (state.lastChecked) $('#lastCheck').textContent = new Date(state.lastChecked).toLocaleString('zh-CN');
+  const titles = { idle: `当前版本 v${state.current}`, checking: '正在检查更新…', latest: `已是最新版本 v${state.current}`, available: `发现新版本 v${state.latest}`, downloading: `正在下载更新 · ${Math.floor(state.percent || 0)}%`, downloaded: `v${state.latest} 已准备好`, restarting: '正在重启更新…', error: '更新暂时失败' };
+  const canDownload = state.status === 'available' || (state.status === 'error' && state.errorStage === 'download');
+  const action = state.status === 'downloaded' ? '重启完成更新' : canDownload ? (state.status === 'error' ? '重试下载' : '立即更新') : state.status === 'error' ? '重新检查' : '';
+  $('#updateResult').innerHTML = `<div class="app-update-card"><strong role="status">${esc(titles[state.status] || '')}</strong>
+    ${!state.supported ? '<p class="muted">测试运行模式不下载安装更新，请使用正式版软件。</p>' : ''}
+    ${state.status === 'downloading' ? `<progress max="100" value="${Number(state.percent) || 0}" aria-label="软件更新下载进度"></progress><small class="muted">${(state.transferred / 1048576).toFixed(1)} / ${(state.total / 1048576).toFixed(1)} MB</small>` : ''}
+    ${state.status === 'downloaded' ? '<p class="muted">重启后完成安装，歌单和登录状态保留。</p>' : ''}
+    ${state.error ? `<p class="update-error">${esc(state.error)}</p>` : ''}
+    ${state.notes ? `<details class="update-notes" ${state.status === 'available' ? 'open' : ''}><summary>更新内容</summary><pre>${esc(state.notes)}</pre></details>` : ''}
+    ${action && state.supported ? `<button id="updateAction" class="primary">${action}</button>` : ''}
+    ${state.latest ? '<small class="muted update-portable-tip">ZIP 版确认更新后会转为安装版；继续免安装使用可下载新版 ZIP。</small>' : ''}</div>`;
+  const button = $('#updateAction');
+  if (button) button.onclick = async () => {
+    button.disabled = true;
+    try { renderAppUpdate(await (state.status === 'downloaded' ? B.updateInstall() : canDownload ? B.updateDownload() : B.checkUpdate())); }
+    catch (error) { toast(error.message); button.disabled = false; }
+  };
+  const visible = ['available', 'downloading', 'downloaded'].includes(state.status) || (state.status === 'error' && state.latest);
+  for (const selector of ['#aboutUpdateBanner', '#diagUpdateBanner']) {
+    const banner = $(selector); banner.hidden = !visible;
+    if (visible) {
+      banner.innerHTML = `<div class="ub-main"><b>${esc(titles[state.status])}</b></div><div class="ub-actions"><button>查看更新</button></div>`;
+      banner.querySelector('button').onclick = openUpdateSettings;
+    }
   }
-  localStorage.lastCheckAt = new Date().toLocaleString('zh-CN');
-  $('#lastCheck').textContent = localStorage.lastCheckAt;
-  if (r.hasUpdate) {
-    renderUpdateBanner($('#aboutUpdateBanner'), r);
-    renderUpdateBanner($('#diagUpdateBanner'), r);
-    if (!silent) showUpdateMsg(`发现新版本 v${r.latest}（当前 v${r.current}）\n\n${r.notes || '暂无发布说明'}`);
-  } else {
-    hideUpdateBanners();
-    if (!silent) showUpdateMsg(`当前已是最新版本 v${r.current}`);
+  if (state.latest && ['available', 'downloaded'].includes(state.status) && updateNoticeVersion !== state.latest + state.status) {
+    updateNoticeVersion = state.latest + state.status;
+    $('#appUpdateNotice').hidden = false;
+    $('#appUpdateNoticeText').textContent = state.status === 'downloaded' ? `v${state.latest} 已下载完成` : `发现新版本 v${state.latest}`;
   }
-  return r;
+  if (['latest', 'restarting'].includes(state.status)) $('#appUpdateNotice').hidden = true;
+}
+async function doCheck() {
+  try { renderAppUpdate(await B.checkUpdate()); }
+  catch (error) { toast(error.message); }
+}
+async function initAppUpdates() {
+  B.onUpdateState(renderAppUpdate);
+  try {
+    let state = await B.updateState();
+    if (state && state.autoCheck === null) state = await B.updateConfigure(localStorage.autoCheck !== '0');
+    renderAppUpdate(state);
+  } catch (_) {} // A failed status read must not block playback startup.
 }
 
 async function initAbout() {
@@ -1864,6 +1889,11 @@ async function initAbout() {
 }
 
 // ---------------------------------------------------------------- 事件
+$('#historyFilter').oninput = renderPlayHistory;
+$('#historyClear').onclick = async () => {
+  if (!S.history.length || !await askConfirm('清空播放历史', '清空全部播放记录？歌单中的歌曲会保留。', '清空')) return;
+  S.history = []; save(); renderPlayHistory();
+};
 $$('.nav-item').forEach((el) => {
   el.onclick = () => {
     showView(el.dataset.view);
@@ -1936,9 +1966,9 @@ $('#prefFlac').onchange = () => {
   syncQualityBtn();
   toast(on ? '已开启无损优先（下一首生效）' : '已关闭无损优先');
 };
-$('#autoCheck').onchange = () => {
-  localStorage.autoCheck = $('#autoCheck').checked ? '1' : '0';
-  toast($('#autoCheck').checked ? '已开启自动检查' : '已关闭自动检查');
+$('#autoCheck').onchange = async () => {
+  try { renderAppUpdate(await B.updateConfigure($('#autoCheck').checked)); }
+  catch (error) { $('#autoCheck').checked = appUpdateState?.autoCheck ?? localStorage.autoCheck !== '0'; toast(error.message); }
 };
 $('#mediaKeys').onchange = () => {
   const on = $('#mediaKeys').checked;
@@ -2223,6 +2253,9 @@ async function selfTest() {
 mark('init 调用前');
 initWorkflows();
 initDownloads();
+initAppUpdates();
+$('#appUpdateNoticeOpen').onclick = () => { $('#appUpdateNotice').hidden = true; openUpdateSettings(); };
+$('#appUpdateNoticeClose').onclick = () => { $('#appUpdateNotice').hidden = true; };
 initStartupLoginReminder();
 init();
 async function afterInit() {
@@ -2231,7 +2264,6 @@ async function afterInit() {
   const lc = localStorage.lastCheckAt;
   if (lc) $('#lastCheck').textContent = lc;
   mark('后台初始化完成');
-  if (localStorage.autoCheck !== '0') doCheck(true); // 更新检查最后再做，不抢首屏
 }
 setTimeout(afterInit, 500); // 诊断/关于/更新检查都不影响首屏，延后执行
 if (location.search.indexOf('selftest=1') >= 0) setTimeout(selfTest, 1200);

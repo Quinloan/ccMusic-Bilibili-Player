@@ -1,6 +1,6 @@
 {
   "name": "ccmusic",
-  "version": "1.6.3",
+  "version": "1.7.0",
   "description": "ccMusic — B 站纯音频连播桌面端：只取音频轨流式播放，自定义收藏夹自动连播",
   "main": "main.js",
   "scripts": {
@@ -19,13 +19,14 @@
     "opencc-js": "1.4.2",
     "qrcode": "^1.5.4",
     "shazamio-api": "1.0.0",
-    "undici": "^8.11.2"
+    "undici": "^8.11.2",
+    "wasm-media-encoders": "0.7.0"
   },
   "build": {
     "appId": "com.ccmusic.app",
     "productName": "ccMusic",
     "directories": {
-      "output": "release-v1.6.3"
+      "output": "release-v1.7.0"
     },
     "artifactName": "${productName}-Setup-${version}.${ext}",
     "publish": {
@@ -49,7 +50,9 @@
       "video-search.cjs",
       "cancellation.cjs",
       "audio-downloads.cjs",
+      "mp3-worker.cjs",
       "download-ipc.cjs",
+      "app-updates.cjs",
       "LICENSE",
       "THIRD-PARTY-NOTICES.md"
     ],
@@ -73,7 +76,20 @@
       {
         "from": "resources/download-audio",
         "to": "download-audio",
-        "filter": ["ffmpeg.exe", "LICENSE*", "download-manifest.json", "README.md", "build-ffmpeg-audio.sh", "FF_VERSION", "compiler-version.txt", "toolchain-packages.txt", "windows-imports.txt", "config.h", "config_components.h", "config.mak"]
+        "filter": [
+          "ffmpeg.exe",
+          "LICENSE*",
+          "download-manifest.json",
+          "README.md",
+          "build-ffmpeg-audio.sh",
+          "FF_VERSION",
+          "compiler-version.txt",
+          "toolchain-packages.txt",
+          "windows-imports.txt",
+          "config.h",
+          "config_components.h",
+          "config.mak"
+        ]
       },
       {
         "from": "resources/ffmpeg-mini.exe",

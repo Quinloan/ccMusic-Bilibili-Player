@@ -33,6 +33,7 @@ function registerDownloads({ app, ipcMain, dialog, BrowserWindow, shell, executa
     return { tasks: manager.retry(event.sender, id) };
   });
   ipcMain.handle('download:list', event => manager.list(event.sender));
+  ipcMain.handle('download:manage', (event, action, batchId) => manager.manage(event.sender, action, batchId));
   ipcMain.handle('download:cancel', (event, id) => manager.cancel(event.sender, id));
   ipcMain.handle('download:dismiss', (event, id) => manager.dismiss(event.sender, id));
   ipcMain.handle('download:reveal', (event, id) => { const file = manager.reveal(event.sender, id); if (file) shell.showItemInFolder(file); return !!file; });

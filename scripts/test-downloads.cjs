@@ -27,8 +27,9 @@ async function run() {
     assert.equal(manager.cancel(other, first[0].id), false);
     await manager.idle();
     const complete = manager.list(owner); assert.deepEqual(complete.map(t => t.state), ['done', 'done']);
+    assert(updates.some(t => t.state === 'saving' && t.pct === 100), 'worker encoding reports actual progress');
     assert.equal(transfers, 1, 'batch splits reuse the same downloaded source');
-    assert.ok(complete[0].file.endsWith('.m4a')); assert.ok(complete[1].file.endsWith('.flac'));
+    assert.ok(complete[0].file.endsWith('.mp3')); assert.ok(complete[1].file.endsWith('.mp3'));
     created.push(...complete.map(task => task.file));
     assert.ok(complete.every(task => task.file.startsWith(dir + path.sep)));
     const flacSource = path.join(dir, 'lossless-source.flac'); created.push(flacSource);
@@ -37,15 +38,19 @@ async function run() {
     const lossless = createDownloader({ executable, tempRoot: dir, onUpdate() {}, resolveItem: async x => x, headers: () => ({}),
       getPlayurl: async () => ({ tracks: [track], flac: losslessTrack }), request: async url => { assert.equal(url, losslessTrack.url); return new Response(fs.readFileSync(flacSource)); } });
     lossless.add(owner, [{ ...item, title: '无损封装路径验证' }], dir); await lossless.idle();
-    const losslessJob = lossless.list(owner)[0]; assert.equal(losslessJob.state, 'done'); assert.ok(losslessJob.file.endsWith('.flac')); created.push(losslessJob.file);
+    const losslessJob = lossless.list(owner)[0]; assert.equal(losslessJob.state, 'done'); assert.ok(losslessJob.file.endsWith('.mp3')); created.push(losslessJob.file);
     const decoded = spawnSync(executable, ['-v', 'error', '-i', complete[1].file, '-f', 's16le', '-ac', '1', '-ar', '48000', 'pipe:1'], { windowsHide: true });
-    assert.equal(decoded.status, 0); assert.equal(decoded.stdout.length, 1.25 * 48000 * 2, 'split must contain only requested 1.25 seconds');
-    const originalDecoded = spawnSync(executable, ['-v', 'error', '-i', source, '-f', 's16le', 'pipe:1'], { windowsHide: true });
-    const remuxDecoded = spawnSync(executable, ['-v', 'error', '-i', complete[0].file, '-f', 's16le', 'pipe:1'], { windowsHide: true });
-    assert.deepEqual(originalDecoded.stdout, remuxDecoded.stdout, 'whole song retains encoded audio without lossy re-encoding');
+    assert.equal(decoded.status, 0); assert(Math.abs(decoded.stdout.length / (48000 * 2) - 1.25) < 0.1, 'split duration includes at most MP3 encoder padding, not adjacent songs');
+    const originalDecoded = spawnSync(executable, ['-v', 'error', '-i', source, '-ac', '2', '-ar', '44100', '-f', 's16le', 'pipe:1'], { windowsHide: true });
+    const remuxDecoded = spawnSync(executable, ['-v', 'error', '-i', complete[0].file, '-ac', '2', '-ar', '44100', '-f', 's16le', 'pipe:1'], { windowsHide: true });
+    assert.equal(remuxDecoded.status, 0); assert(Math.abs(remuxDecoded.stdout.length - originalDecoded.stdout.length) < 48000 * 4 * 0.1, 'whole MP3 decodes to the original duration within encoder padding');
+    assert.equal(fs.readFileSync(complete[0].file).toString('ascii', 0, 3), 'ID3');
+    const mp3 = fs.readFileSync(complete[0].file), offset = 10 + ((mp3[6] << 21) | (mp3[7] << 14) | (mp3[8] << 7) | mp3[9]);
+    assert.equal(mp3[offset], 255); assert.equal(mp3[offset + 2] >>> 4, 14, 'MPEG1 Layer III frame uses 320 kbps');
+    assert(mp3.subarray(10, offset).includes(Buffer.from(item.title, 'utf16le'))); assert(mp3.subarray(10, offset).includes(Buffer.from(item.artist, 'utf16le')));
     assert.equal(manager.reveal(other, first[0].id), null); assert.equal(manager.dismiss(other, first[0].id), false);
     manager.add(owner, [item], dir); await manager.idle();
-    const duplicate = manager.list(owner).at(-1); created.push(duplicate.file); assert.ok(duplicate.file.endsWith('(1).m4a')); assert.equal(refreshes, 3);
+    const duplicate = manager.list(owner).at(-1); created.push(duplicate.file); assert.ok(duplicate.file.endsWith('(2).mp3')); assert.equal(refreshes, 3);
     const bad = createDownloader({ executable, tempRoot: dir, onUpdate() {}, resolveItem: async x => x, headers: () => ({}),
       getPlayurl: async () => ({ tracks: [track], flac: { ...track, lossless: true, url: 'https://audio.test/flac' } }),
       request: async url => { assert.equal(url, 'https://audio.test/flac'); return new Response('error', { status: 403 }); } });
@@ -58,6 +63,12 @@ async function run() {
     const tasks = cancelled.add(owner, [item, item], dir); await waitStarted;
     assert.equal(cancelled.cancel(owner, tasks[0].id), true); assert.equal(cancelled.cancel(owner, tasks[1].id), true);
     await cancelled.idle(); assert.deepEqual(cancelled.list(owner).map(t => t.state), ['cancelled', 'cancelled']);
+    let encodingCancel;
+    encodingCancel = createDownloader({ executable, tempRoot: dir, resolveItem: async x => x, headers: () => ({}),
+      getPlayurl: async () => ({ tracks: [track] }), request: async () => new Response(bytes),
+      onUpdate: (_, task) => { if (task.state === 'saving' && task.pct > 0) encodingCancel.cancel(owner, task.id); } });
+    encodingCancel.add(owner, [item], dir); await encodingCancel.idle();
+    assert.equal(encodingCancel.list(owner)[0].state, 'cancelled', 'cancel during actual encoder worker must not commit a partial MP3');
     let prepared;
     const startedPreparing = new Promise(resolve => { prepared = resolve; });
     const exiting = createDownloader({ executable, tempRoot: dir, onUpdate: (_, task) => { if (task.state === 'preparing') prepared(); },
@@ -72,11 +83,13 @@ async function run() {
     const ipc = registerDownloads({ ipcMain: { handle: (key, fn) => handlers.set(key, fn) }, dialog: { showOpenDialog: async () => { dialogs++; return { canceled: true }; } },
       BrowserWindow: { fromWebContents: () => null }, shell: {}, executable, getLoginState: async () => ({ logged }), getPlayurl: async () => { throw Error('must not request'); }, resolveItem: async x => x, request() {}, headers() {} });
     const event = { sender: { isDestroyed: () => false } }, start = handlers.get('download:start');
+    assert.deepEqual(handlers.get('download:manage')(event, 'cancel'), { removed: [], cancelled: 0, committing: 0 });
+    assert.throws(() => handlers.get('download:manage')(event, 'delete'), /无效/);
     assert.deepEqual(await start(event, [item]), { needsLogin: true, stale: false }); assert.equal(dialogs, 0);
     assert.deepEqual(await start(event, [item], true), { cancelled: true }); assert.equal(dialogs, 1);
     logged = true; assert.deepEqual(await start(event, [item]), { cancelled: true }); assert.equal(dialogs, 2); await ipc.idle();
-    console.log('PASS: highest FLAC/Dolby/AAC selection, fresh URLs, real FFmpeg remux and exact split, names/collisions, no silent downgrade, cancellation/cleanup/ownership, IPC login gate');
-  } finally {
+    console.log('PASS: highest source selection, real MP3 encoding/decoding and bounded split padding, ID3, names/collisions, no silent downgrade, cancellation/cleanup/ownership, IPC login gate');
+  } catch (error) { console.error(error); throw error; } finally {
     for (const file of created) fs.rmSync(file, { force: true });
     fs.rmdirSync(dir); // Deliberately nonrecursive: leftovers fail the test.
   }

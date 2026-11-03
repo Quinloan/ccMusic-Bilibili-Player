@@ -1,13 +1,5 @@
 # ccMusic v1.6.3
 
-## 下载软件
-
-**[下载解压即用 ZIP：ccMusic-1.6.3-Windows-x64.zip](https://github.com/Quinloan/ccMusic-Bilibili-Player/releases/download/v1.6.3/ccMusic-1.6.3-Windows-x64.zip)**
-
-解压后运行文件夹里的 `ccMusic.exe`，无需先安装。数据仍保存在本机用户目录。ZIP 中的自动更新会下载并转为安装版；如希望继续免安装使用，可手动下载新版 ZIP。
-
-安装版用户可使用下面的 `.exe`；`latest.yml` 由自动更新读取，普通用户不用下载。
-
 **修复补丁**：改善拖动进度后的播放稳定性、音量平衡和智能分歌体验。
 
 ## 功能
@@ -33,16 +25,16 @@
 
 本次以修复为主，以下沿用 v1.6.2 的界面截图。
 
-![首页音乐推荐](https://raw.githubusercontent.com/Quinloan/ccMusic-Bilibili-Player/main/docs/screenshots/01-home.png)
+![首页音乐推荐](https://github.com/Quinloan/ccMusic-Bilibili-Player/releases/download/v1.6.3/01-home.png)
 
-![智能分割与加入歌单](https://raw.githubusercontent.com/Quinloan/ccMusic-Bilibili-Player/main/docs/screenshots/02-smart-split.png)
+![智能分割与加入歌单](https://github.com/Quinloan/ccMusic-Bilibili-Player/releases/download/v1.6.3/02-smart-split.png)
 
-![歌单分组与歌曲资料](https://raw.githubusercontent.com/Quinloan/ccMusic-Bilibili-Player/main/docs/screenshots/03-playlist.png)
+![歌单分组与歌曲资料](https://github.com/Quinloan/ccMusic-Bilibili-Player/releases/download/v1.6.3/03-playlist.png)
 
 ## 下载与升级
 
 Windows 10 / 11 x64 下载 **ccMusic-Setup-1.6.3.exe**，可覆盖安装，保留本机歌单和登录状态；正式版用户也可使用应用内更新。
 
-普通用户只需下载安装包；`latest.yml` 由自动更新使用。开发构建资源与对应源码另见[开发资源页](https://github.com/Quinloan/ccMusic-Bilibili-Player/releases/tag/build-resources-v1.6.3)。
+普通用户下载安装包即可，其他附件用于自动更新、文件校验与开发者构建。
 
 最高可用音质取决于 B 站登录状态、账号权益和视频源音轨；分段保存为 FLAC 不会提升有损源质量。识曲与分割支持手动修正，复杂翻唱、混音和连续串烧仍可能需要调整。

@@ -1,6 +1,25 @@
 // Download state comes from the main process; URLs and login credentials stay there.
 const downloadTasks = new Map();
 const downloadUnseen = new Set();
+const downloadBatchSnapshots = new Map();
+// Late IPC events and startup snapshots must not restore dismissed cards.
+const downloadDismissedIds = new Set();
+const downloadEnded = task => ['done', 'error', 'cancelled'].includes(task.state);
+let downloadManagementBusy = false;
+function forgetDownloads(ids) {
+  for (const id of ids) { downloadDismissedIds.add(id); downloadTasks.delete(id); downloadUnseen.delete(id); }
+  renderDownloads();
+}
+async function manageDownloads(action, batchId) {
+  if (downloadManagementBusy) return;
+  downloadManagementBusy = true; renderDownloads();
+  try {
+    const result = await B.downloadManage(action, batchId);
+    forgetDownloads(result.removed || []);
+    if (result.committing) toast('正在保存的歌曲将保留，其余任务已取消');
+  } catch (error) { toast(error.message); }
+  finally { downloadManagementBusy = false; renderDownloads(); }
+}
 let pendingDownload = null, resumeDownload = null, downloadBusy = false, downloadFocus = null;
 let downloadPicker = null;
 function openDownloadPicker(items, source = '当前歌单') {
@@ -40,16 +59,52 @@ function renderDownloads() {
   const failed = tasks.some(task => task.state === 'error' && downloadUnseen.has(task.id));
   setActivityIndicator('#downloadsBtn', failed ? 'error' : active ? 'running' : downloadUnseen.size ? 'attention' : 'idle', '音频下载');
   $('#downloadsEmpty').hidden = !!tasks.length;
-  $('#downloadsList').innerHTML = tasks.map(task => {
+  $('#downloadsTools').hidden = !tasks.length;
+  $('#downloadsCancelAll').disabled = downloadManagementBusy || !tasks.some(t => !downloadEnded(t) && t.state !== 'committing');
+  $('#downloadsClear').disabled = downloadManagementBusy || !tasks.some(downloadEnded);
+  const groups = new Map();
+  for (const task of tasks) {
+    if (task.batchId && task.batchProgress && (!downloadBatchSnapshots.has(task.batchId) || task.batchRevision >= downloadBatchSnapshots.get(task.batchId).revision)) {
+      downloadBatchSnapshots.set(task.batchId, { revision: task.batchRevision, progress: task.batchProgress });
+    }
+    const key = task.batchId || task.id;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(task);
+  }
+  for (const key of downloadBatchSnapshots.keys()) if (!groups.has(key)) downloadBatchSnapshots.delete(key);
+  $('#downloadsList').innerHTML = [...groups.values()].map(group => {
+    const newest = group.reduce((a, b) => (b.batchRevision || 0) > (a.batchRevision || 0) ? b : a);
+    const batch = downloadBatchSnapshots.get(newest.batchId)?.progress || newest.batchProgress, multiple = batch?.total > 1;
+    const downloading = group.filter(t => t.state === 'downloading');
+    const shared = multiple && group.some(t => t.sharedSource);
+    const saved = batch?.saved || 0;
+    const ended = batch && saved + batch.failed + batch.cancelled === batch.total;
+    let heading = '';
+    if (multiple) {
+      const details = [`音源就绪 ${batch.downloaded}/${batch.total}`];
+      if (batch.converting) details.push(`转换中 ${batch.converting}`);
+      if (batch.waiting) details.push(`等待转换 ${batch.waiting}`);
+      if (batch.failed) details.push(`失败 ${batch.failed}`);
+      if (batch.cancelled) details.push(`已取消 ${batch.cancelled}`);
+      const cancellable = group.some(t => !downloadEnded(t) && t.state !== 'committing');
+      heading = `<div class="download-batch-head"><strong>${ended ? '批量任务已结束' : '批量下载'} · 已保存 ${saved}/${batch.total} 首</strong>
+        <div class="batch-actions">${cancellable ? `<button data-dl-batch-cancel="${newest.batchId}" ${downloadManagementBusy ? 'disabled' : ''}>取消这批</button>` : ''}${group.some(downloadEnded) ? `<button data-dl-batch-clear="${newest.batchId}" ${downloadManagementBusy ? 'disabled' : ''}>清理记录</button>` : ''}</div>
+        <small>${details.join(' · ')}</small><progress max="${batch.total}" value="${saved}" aria-label="整批歌曲保存进度"></progress>
+        ${shared ? downloading.filter(task => task.sharedSource).map(task => `<div class="download-source-status">共用音源下载 ${Number(task.pct) || 0}%<progress max="100" value="${Number(task.pct) || 0}" aria-label="共用音源下载进度"></progress></div>`).join('') : ''}</div>`;
+    }
+    return `<section class="download-batch">${heading}` + group.map(task => {
+    const commonSource = multiple && task.sharedSource;
     const terminal = ['done', 'error', 'cancelled'].includes(task.state);
-    const status = { queued: '排队中', preparing: '获取最高音质音轨…', downloading: `下载中 ${task.pct || 0}%`, saving: '正在处理音频…', committing: '正在保存文件…', done: '已完成', cancelled: '已取消', error: '下载失败：' + task.error }[task.state] || '准备中';
+    const status = { queued: commonSource ? '等待音源就绪' : '等待下载', preparing: '获取最高音质音轨…', downloading: commonSource ? '等待共用音源下载' : `下载音源 ${task.pct || 0}%`, 'waiting-conversion': '已下载，等待转换', saving: `正在转换为 MP3 ${task.pct || 0}%`, committing: '正在保存文件…', done: '已保存', cancelled: '已取消', error: '下载失败：' + task.error }[task.state] || '准备中';
     return `<div class="task-card"><strong>${esc(task.title)}</strong><small class="download-status" role="status">${esc(status)}</small>${task.quality ? `<small>${esc(task.quality)}</small>` : ''}
-      ${task.state === 'downloading' ? `<progress max="100" value="${Number(task.pct) || 0}" aria-label="下载进度"></progress>` : ''}
+      ${task.state === 'downloading' && !commonSource ? `<progress max="100" value="${Number(task.pct) || 0}" aria-label="下载进度"></progress>` : ''}
+      ${task.state === 'saving' ? `<progress max="100" value="${Number(task.pct) || 0}" aria-label="歌曲转换进度"></progress>` : ''}
       ${task.file ? `<small class="download-path" title="${esc(task.file)}">${esc(task.file)}</small>` : ''}
       <div class="task-actions">${!terminal && task.state !== 'committing' ? `<button data-dl-cancel="${task.id}">取消</button>` : ''}
       ${task.state === 'done' ? `<button data-dl-reveal="${task.id}">打开文件位置</button>` : ''}
       ${['error', 'cancelled'].includes(task.state) ? `<button data-dl-retry="${task.id}">重试</button>` : ''}
       ${terminal ? `<button data-dl-dismiss="${task.id}">移除记录</button>` : ''}</div></div>`;
+    }).join('') + '</section>';
   }).join('');
 }
 function showDownloads() {
@@ -74,7 +129,7 @@ async function performDownload(operation, allowLimited = false) {
       $('#downloadLoginModal').hidden = false; $('#downloadLoginGo').focus(); return false;
     }
     if (result.cancelled) return false;
-    for (const task of result.tasks || []) if (!downloadTasks.has(task.id)) downloadTasks.set(task.id, task);
+    for (const task of result.tasks || []) if (!downloadDismissedIds.has(task.id) && !downloadTasks.has(task.id)) downloadTasks.set(task.id, task);
     renderDownloads(); showDownloads(); toast('已加入下载队列'); return true;
   } catch (error) { toast('下载失败：' + error.message); return false; }
   finally { downloadBusy = false; }
@@ -124,11 +179,14 @@ function initDownloads() {
     }
   };
   B.onDownloadProgress(task => {
+    if (downloadDismissedIds.has(task.id)) return;
     downloadTasks.set(task.id, task);
     if (['done', 'error'].includes(task.state) && $('#downloadsPanel').hidden) downloadUnseen.add(task.id);
     renderDownloads();
   });
-  B.downloadList().then(tasks => { for (const task of Array.isArray(tasks) ? tasks : []) if (!downloadTasks.has(task.id)) downloadTasks.set(task.id, task); renderDownloads(); }).catch(() => {});
+  B.downloadList().then(tasks => { for (const task of Array.isArray(tasks) ? tasks : []) if (!downloadDismissedIds.has(task.id) && !downloadTasks.has(task.id)) downloadTasks.set(task.id, task); renderDownloads(); }).catch(() => {});
+  $('#downloadsCancelAll').onclick = () => manageDownloads('cancel');
+  $('#downloadsClear').onclick = () => manageDownloads('clear');
   $('#downloadsBtn').onclick = () => { const visible = !$('#downloadsPanel').hidden; showDownloads(); $('#downloadsPanel').hidden = visible; };
   $('#downloadsClose').onclick = () => { $('#downloadsPanel').hidden = true; };
   $('#downloadCurrent').onclick = () => { const item = playback.current?.item || S.queue[S.qcur]; if (item) requestDownloads([item]); else toast('请先播放一首歌'); };
@@ -136,10 +194,14 @@ function initDownloads() {
   $('#downloadsList').onclick = async event => {
     const button = event.target.closest('button'); if (!button) return;
     try {
-      if (button.dataset.dlCancel) await B.downloadCancel(button.dataset.dlCancel);
+      if (button.dataset.dlBatchCancel) return await manageDownloads('cancel', button.dataset.dlBatchCancel);
+      if (button.dataset.dlBatchClear) return await manageDownloads('clear', button.dataset.dlBatchClear);
+      if (button.dataset.dlCancel && await B.downloadCancel(button.dataset.dlCancel)) {
+        if (await B.downloadDismiss(button.dataset.dlCancel)) forgetDownloads([button.dataset.dlCancel]);
+      }
       if (button.dataset.dlReveal) await B.downloadReveal(button.dataset.dlReveal);
       if (button.dataset.dlRetry) await performDownload({ id: button.dataset.dlRetry });
-      if (button.dataset.dlDismiss && await B.downloadDismiss(button.dataset.dlDismiss)) { downloadTasks.delete(button.dataset.dlDismiss); downloadUnseen.delete(button.dataset.dlDismiss); renderDownloads(); }
+      if (button.dataset.dlDismiss && await B.downloadDismiss(button.dataset.dlDismiss)) forgetDownloads([button.dataset.dlDismiss]);
     } catch (error) { toast(error.message); }
   };
   $('#downloadLoginCancel').onclick = closeDownloadPrompt;
