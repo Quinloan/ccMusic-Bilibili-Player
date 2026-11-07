@@ -272,6 +272,7 @@ function taskProgress(progress) {
   const task = splitTasks.get(progress.requestId) || [...splitTasks.values()].find(t => t.runId === progress.requestId);
   if (!task || task.state !== 'running') return;
   task.progress = progress;
+  if (task.intent === 'download' && task.downloadPhase === 'identify' && progress.track) applyDownloadRecognition(task, progress.index, progress.track);
   if (task.batch && progress.track) applyRecognizedTrack(task, progress.index, progress.track);
   renderTasks();
 }
@@ -521,7 +522,7 @@ function renderTasks() {
   for (const task of list) if (task.state === 'done' && !taskDismissTimers.has(task.id)) {
     taskDismissTimers.set(task.id, setTimeout(() => dismissSplitTask(task, true), TASK_DONE_VISIBLE_MS));
   }
-  const state = list.some(task => task.state === 'error') ? 'error' : list.some(task => task.state === 'ready') ? 'attention' : list.some(task => task.state === 'running') || metadataParseJobs.size ? 'running' : 'idle';
+  const state = list.some(task => task.state === 'error') ? 'error' : list.some(task => ['ready', 'download-ready'].includes(task.state)) ? 'attention' : list.some(task => task.state === 'running') || metadataParseJobs.size ? 'running' : 'idle';
   setActivityIndicator('#taskBtn', state, '后台任务');
   $('#taskEmpty').hidden = !!(list.length || metadataParseJobs.size);
   $('#tasksTools').hidden = !list.length;
@@ -530,50 +531,63 @@ function renderTasks() {
   const metadataCards = [...metadataParseJobs.values()].map(job => `<div class="task-card"><strong>${esc(job.progress.title)}</strong><small>正在解析歌曲信息 ${job.progress.done}/${job.progress.total}</small><progress max="${job.progress.total}" value="${job.progress.done}"></progress></div>`).join('');
   $('#taskList').innerHTML = metadataCards + list.map(task => {
     const p = task.progress || {};
-    const status = task.state === 'ready' ? `${task.result.tracks.length} 首待加入`
+    const status = task.state === 'download-ready' ? `${splitDownloadItems(task).length} 首待下载`
+      : task.state === 'ready' ? `${task.result.tracks.length} 首${task.intent === 'download' ? '待确认分段' : '待加入'}`
       : task.state === 'done' ? '识曲完成' : task.state === 'error' ? task.error : task.state === 'cancelled' ? (task.batch ? '识曲已停止，已加入的曲目保留' : '已取消，原曲目保留')
       : ({ queued: task.batch ? '排队等待识曲' : '排队等待解析', download: `正在智能解析 ${p.pct || 0}%`, analyze: '正在智能解析', identify: `正在识别 ${p.done || 0}/${p.total || '?'}`, lyrics: `正在转写唱词 ${(+p.done || 0) + 1}/${p.total || '?'}`, cached: '正在读取解析结果' }[p.stage] || '正在准备…');
     return `<div class="task-card">${task.state !== 'running' ? `<button class="task-dismiss" data-dismiss="${task.id}" aria-label="关闭任务" title="关闭任务">×</button>` : ''}<strong>${esc(task.item.title)}</strong><small>${esc(status)}</small>
       ${task.state === 'running' && p.stage === 'download' ? `<progress max="100" value="${Number(p.pct) || 0}"></progress>` : ''}
       ${task.state !== 'done' ? `<div class="task-actions">${task.state === 'running' ? `<button data-cancel="${task.id}">取消</button>` : ''}
-      ${task.state === 'ready' ? `<button class="primary" data-review="${task.id}">加入歌单…</button>` : ''}
-      ${['error', 'cancelled'].includes(task.state) ? `<button data-retry="${task.id}">${task.batch ? '继续识曲' : '重试'}</button>` : ''}
+      ${task.state === 'ready' ? `<button class="primary" data-review="${task.id}">${task.intent === 'download' ? '确认分段…' : '加入歌单…'}</button>` : ''}
+      ${task.intent === 'download' && (task.state === 'download-ready' || task.state === 'error' && task.downloadPhase === 'identify') ? `<button data-download-results="${task.id}" class="primary">选择歌曲下载…</button>` : ''}
+      ${task.intent === 'download' && task.state === 'error' && task.downloadPhase !== 'identify' ? `<button data-download-whole="${task.id}">整段下载</button>` : ''}
+      ${['error', 'cancelled'].includes(task.state) ? `<button data-retry="${task.id}">${task.batch || task.downloadPhase === 'identify' ? '继续识曲' : '重试'}</button>` : ''}
       </div>` : ''}</div>`;
   }).join('');
   $('#taskList').onclick = async event => {
     const button = event.target.closest('button'); if (!button) return;
-    const id = button.dataset.cancel || button.dataset.review || button.dataset.retry || button.dataset.dismiss;
+    const id = button.dataset.cancel || button.dataset.review || button.dataset.retry || button.dataset.dismiss || button.dataset.downloadResults || button.dataset.downloadWhole;
     const task = splitTasks.get(id); if (!task) return;
     if (button.dataset.cancel) {
       cancelSplitTask(task);
     } else if (button.dataset.review) { dismissTaskNotice(task.id); openSplitReview(task); }
+    else if (button.dataset.downloadResults) selectSplitDownloads(task);
+    else if (button.dataset.downloadWhole) requestDownloads([task.item], { whole: true, taskId: task.id });
     else if (button.dataset.retry) {
-      if (task.batch) runRecognitionTask(task);
+      if (task.intent === 'download' && task.downloadPhase === 'identify') runDownloadRecognition(task);
+      else if (task.intent === 'download') { dismissSplitTask(task); runDownloadSplit(task.item); }
+      else if (task.batch) runRecognitionTask(task);
       else { splitTasks.delete(id); if (task.previous) runSplitTask(task.folder, task.item, task.description, task.previous); else maybeSplit(task.folder, task.item, task.description); }
     }
     else dismissSplitTask(task);
   };
-  try { localStorage.splitTaskDrafts = JSON.stringify(list.filter(task => task.state !== 'done').map(task => ({ folderId: task.folder.id, key: itemKey(task.item),
+  try { localStorage.splitTaskDrafts = JSON.stringify(list.filter(task => task.state !== 'done').map(task => ({ folderId: task.folder?.id, key: itemKey(task.item),
+    intent: task.intent, downloadPhase: task.downloadPhase, downloadItem: task.intent === 'download' ? task.item : undefined,
     description: task.description, state: task.state, result: task.result, error: task.error, batch: task.batch, original: task.batch || task.previous ? task.item : undefined,
     previousKeys: task.previous?.map(itemKey) }))); } catch (_) {}
 }
 function splitTaskSourcePresent(task) {
+  if (task.intent === 'download') return splitTasks.get(task.id) === task;
   return S.folders.includes(task.folder) && (task.previous ? task.previous.length > 0 && task.previous.every(item => task.folder.items.includes(item)) : task.folder.items.includes(task.item));
 }
-async function runSplitTask(f, item, description, previous = null) {
-  if ([...splitTasks.values()].some(t => (t.item === item || (previous && t.previous && t.folder === f && sourceKey(t.item) === sourceKey(item))) && ['running', 'ready'].includes(t.state))) { $('#downloadsPanel').hidden = true; $('#queuePanel').hidden = true; $('#tasksPanel').hidden = false; return; }
-  if (previous ? !previous.every(part => f.items.includes(part)) : !f.items.includes(item)) return;
+async function runSplitTask(f, item, description, previous = null, intent = 'library') {
+  if ([...splitTasks.values()].some(t => (t.item === item || (intent === 'download' && t.intent === 'download' && sourceKey(t.item) === sourceKey(item)) || (previous && t.previous && t.folder === f && sourceKey(t.item) === sourceKey(item))) && ['running', 'ready', 'download-ready'].includes(t.state))) { $('#downloadsPanel').hidden = true; $('#queuePanel').hidden = true; $('#tasksPanel').hidden = false; return; }
+  if (intent !== 'download' && (previous ? !previous.every(part => f.items.includes(part)) : !f.items.includes(item))) return;
   if (splitTasks.size >= 20) { toast('任务列表已满，请先确认或移除旧任务'); return; }
-  const task = { id: uniqueId(), folder: f, item, description, previous, state: 'running' };
+  const task = { id: uniqueId(), folder: f, item, description, previous, intent, state: 'running' };
   splitTasks.set(task.id, task); $('#downloadsPanel').hidden = true; $('#queuePanel').hidden = true; $('#tasksPanel').hidden = false; renderTasks();
   try {
+    if (intent === 'download') {
+      await ensureCid(item);
+      if (task.state === 'cancelled') return;
+    }
     const result = await B.splitAnalyze(item.bvid, item.cid, undefined, description, task.id, { mode: 'split' });
     if (task.state === 'cancelled' || !splitTaskSourcePresent(task) || result.tracks?.length < 2) {
       if (result.sessionId) B.splitRelease(result.sessionId).catch(() => {});
     }
     if (task.state === 'cancelled') return;
     if (!splitTaskSourcePresent(task)) throw new Error('原曲目已移除或变更，请重新分析');
-    if (result.tracks?.length < 2) throw new Error('没有发现明显分曲间隔，整段已保留');
+    if (result.tracks?.length < 2) throw new Error(intent === 'download' ? '没有发现明显分曲间隔，可改用整段下载' : '没有发现明显分曲间隔，整段已保留');
     task.result = result; task.state = 'ready';
   } catch (error) { if (task.state !== 'cancelled') { task.state = 'error'; task.error = error.message; } }
   renderTasks();
@@ -585,6 +599,15 @@ function restorePendingTasks() {
     if (!Array.isArray(drafts)) return;
     for (const draft of drafts.slice(0, 20)) {
       if (draft.state === 'done') continue;
+      if (draft.intent === 'download') {
+        if (!draft.downloadItem?.bvid) continue;
+        if (draft.result) LibraryModel.validateTracks(draft.result.tracks, draft.result.duration || draft.result.tracks.at(-1).end);
+        const state = ['ready', 'download-ready'].includes(draft.state) ? draft.state : 'error';
+        const task = { id: uniqueId(), intent: 'download', folder: null, item: draft.downloadItem, description: String(draft.description || ''),
+          downloadPhase: draft.downloadPhase, state, result: draft.result, error: draft.error || '上次解析已中断，可以重试' };
+        if (task.result) delete task.result.sessionId;
+        splitTasks.set(task.id, task); continue;
+      }
       const f = draft.batch ? S.folders.find(folder => folder.items.some(item => item.splitBatch === draft.batch)) : S.folders.find(folder => folder.id === draft.folderId);
       const previous = Array.isArray(draft.previousKeys) ? draft.previousKeys.map(key => f?.items.find(item => itemKey(item) === key)) : null;
       if (previous?.some(item => !item)) continue;
@@ -710,12 +733,13 @@ function setReviewWarning(text) {
   $('#reviewWarning').hidden = !text;
 }
 function renderReview() {
-  const { tracks, adjusting } = reviewTask;
+  const { tracks, adjusting, task } = reviewTask;
   $('#reviewHeading').textContent = `已分成 ${tracks.length} 首`;
   $('.review-box').classList.toggle('adjusting', adjusting);
   $('#reviewAdjust').textContent = adjusting ? '完成调整' : '调整分段';
   $('#reviewAdjust').setAttribute('aria-expanded', String(adjusting));
-  $('#reviewHint').textContent = adjusting ? '可修改结束时间，或拆分、合并分段。' : '加入歌单后自动识别歌名。';
+  $('#reviewHint').textContent = adjusting ? '可修改结束时间，或拆分、合并分段。' : task.intent === 'download' ? '确认后识别歌名，再选择单曲下载为 MP3。' : '加入歌单后自动识别歌名。';
+  $('#reviewConfirm').textContent = task.intent === 'download' ? '确认并识曲' : '加入歌单';
   $('#reviewRows').innerHTML = tracks.map((track, i) => `<div class="review-row" data-index="${i}">
     <div class="review-track">
       ${adjusting ? `<input class="review-name" aria-label="第 ${i + 1} 首歌名" placeholder="曲目 ${i + 1}（待识别）" value="${esc(track.title || '')}" />`
@@ -894,6 +918,10 @@ function initWorkflows() {
       const tracks = readReview(), task = reviewTask.task;
       if (!splitTaskSourcePresent(task)) throw new Error('原视频或歌单已移除或变更，无法应用');
       task.result = { ...task.result, tracks, named: tracks.filter(t => t.title).length };
+      if (task.intent === 'download') {
+        stopReviewAudio(); $('#reviewModal').hidden = true; reviewTask = null;
+        runDownloadRecognition(task); return;
+      }
       S.active = task.folder.id; showView('library');
       task.batch = applySplitResult(task.folder, task.item, task.result, task.previous);
       task.previous = null;

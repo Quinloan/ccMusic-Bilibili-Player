@@ -31,6 +31,12 @@
       .replace(/\bR\s*&\s*B\b|\b(?:pop|hip\s*hop|rock|jazz)\b/gi, ' ')
       .replace(/\d+(?:\.\d+)?\s*(?:小时|分钟|分|小时版)|热门|热歌|金曲|精选/gi, ' ')
       .replace(/录音室作品|录音室专辑|音乐作品|作品全集|作品合集|歌曲全集|音乐全集|歌曲合集|音乐合集|全专辑|全歌曲|全部歌曲|热门歌曲|精选歌曲|歌曲精选|金曲精选|精选|全集|合集|合辑|专辑|音乐|歌曲|收录|大全|全辑|完整|\d+首/gi, '').trim();
+    // Decoration can become an exposed trailing separator only after removing
+    // the quality/collection/caption. Keep internal separators: two artists
+    // separated by a bar are not evidence of one album artist.
+    const decoratedParentArtist = parentArtist;
+    parentArtist = parentArtist.replace(/^[\s|/：:,，·\-–—]+|[\s|/：:,，·\-–—]+$/g, '').trim();
+    const repairedParentDecoration = decoratedParentArtist !== parentArtist;
     if (!parentArtist || parentArtist.length > 45 || /[《》「」“”!?！？:：|]|B站|华语|欧美|热门|流行|经典|歌单|串烧|推荐|盘点|放松|通勤|专注|翻唱|现场|演唱会|\bcover\b|\bAI\b/i.test(parentArtist)) parentArtist = '';
     // A previously fingerprinted performer is stronger evidence than a playlist caption.
     if (typeof input.artist === 'string' && input.artist.trim() && input.artist.length <= 100) parentArtist = input.artist.trim();
@@ -57,9 +63,10 @@
     }
     const quoted = [...raw.matchAll(/[《「“]([^》」”]+)[》」”]/g)];
     if (quoted.length > 1 && (!albumPart || /[《「“]/.test(albumPart.name))) return null;
-    let candidates, query, fallback = null;
+    let candidates, query, fallback = null, artistFromParent = false;
     if (albumPart) {
       candidates = [albumPart]; query = `${albumPart.name} ${albumPart.artist}`; fallback = { ...albumPart };
+      artistFromParent = !input.artist;
     } else if (quoted.length === 1) {
       let name = quoted[0][1].trim();
       let artist = clean(raw.replace(quoted[0][0], ' '));
@@ -68,19 +75,25 @@
         return whole;
       }).trim();
       if (artist.length > 45 || /携手|翻唱|现场|好听|天籁|百万|设备|试听|首秀|字幕|原唱|歌词|版本|录音|一首|听哭|演唱会/.test(artist)) artist = '';
+      artistFromParent = !artist && !!parentArtist && !input.artist;
       artist ||= parentArtist;
       candidates = [{ name, artist }]; query = `${name} ${artist}`.trim(); fallback = { name, artist };
     } else {
       let parts = raw.split(/\s+[-–—|]\s+|[–—|]/).map(clean).filter(Boolean);
       if (parts.length === 1 && raw.includes('-')) parts = raw.split('-').map(clean).filter(Boolean);
       if (parts.length === 2) candidates = [{ name: parts[1], artist: parts[0] }, { name: parts[0], artist: parts[1] }];
-      else candidates = [{ name: raw, artist: parentArtist }];
+      else { candidates = [{ name: raw, artist: parentArtist }]; artistFromParent = !!parentArtist && !input.artist; }
       query = parts.length === 2 ? parts.join(' ') : `${raw} ${parentArtist}`.trim();
     }
     candidates = candidates.filter(c => c.name && c.name.length <= 100 && !/^\d+$/.test(c.name));
     if (!fallback && candidates.length === 1 && parentArtist) fallback = { ...candidates[0] };
-    const metadataVersion = albumLabel ? 4 : albumPart || (parentArtist && (parentLabelFree !== parentSource || /录音室作品|录音室专辑|音乐作品|作品全集|作品合集/.test(parentSource))) ? 3 : 2;
-    return candidates.length ? { raw, candidates, query: query.slice(0, 240), fallback, parentArtist, metadataVersion } : null;
+    // Explicit is a content advisory, not a remix/live identifier. Preserve the
+    // source title but omit the advisory from catalog search keywords.
+    const advisory = /[（(\[]\s*explicit(?:\s+(?:version|lyrics|content))?\s*[）)\]]/gi;
+    const cleanQuery = query.replace(advisory, ' ').replace(/\s+/g, ' ').trim();
+    let metadataVersion = albumLabel ? 4 : albumPart || (parentArtist && (parentLabelFree !== parentSource || /录音室作品|录音室专辑|音乐作品|作品全集|作品合集/.test(parentSource))) ? 3 : 2;
+    if ((repairedParentDecoration && parentArtist) || cleanQuery !== query) metadataVersion = 5;
+    return candidates.length ? { raw, candidates, query: cleanQuery.slice(0, 240), fallback, parentArtist, artistFromParent, metadataVersion } : null;
   }
   function validateTracks(tracks, seconds, minimum = 2) {
     if (!Array.isArray(tracks) || tracks.length < minimum || tracks.length > 1000) throw new Error('请保留至少两首曲目');
@@ -139,7 +152,7 @@
         if (artwork) clean.songCover = artwork;
         if (/^\d{1,20}$/.test(String(item.neteaseId || ''))) clean.neteaseId = String(item.neteaseId);
         for (const key of ['sourceTitle', 'partTitle']) if (typeof item[key] === 'string') clean[key] = item[key].slice(0, 500);
-        if ([1, 2, 3, 4].includes(item.titleMetaVersion)) clean.titleMetaVersion = item.titleMetaVersion;
+        if ([1, 2, 3, 4, 5].includes(item.titleMetaVersion)) clean.titleMetaVersion = item.titleMetaVersion;
         return clean;
       }) };
     });

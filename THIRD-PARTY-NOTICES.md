@@ -1,5 +1,22 @@
 # Recognition components
 
+## Artwork colour matching
+
+`cover-palette.cjs` uses the unmodified `@material/material-color-utilities` 0.3.0 package (Copyright Google LLC, Apache-2.0) for deterministic Wu quantization and Score seed selection. The dependency includes its full Apache-2.0 LICENSE. Source: https://github.com/material-foundation/material-color-utilities . It runs locally; no account, external colour service or runtime download is used. ccMusic uses the selected RGB colour directly as an opaque background (option A), pairs text/buttons by contrast, and counts populations against the quantized palette. Random-initialized Celebi/WSMeans refinement is not used. The design comparison script shares the production extraction and direct-colour theme functions; its optional B/C alternatives use HCT and Material light schemes but are not applied in the player. No SPlayer application code was copied.
+
+The previous extractor followed [Panic ColorArt](https://github.com/panicinc/ColorArt). Its edge-weighted colour selection has been replaced by Material. The historical attribution and licence are retained below for the earlier adaptation; current theme generation no longer uses its background/foreground selection.
+
+ColorArt license:
+
+Copyright (C) 2012 Panic Inc. Code by Wade Cosgrove. All rights reserved.
+
+Redistribution and use, with or without modification, are permitted provided that the following conditions are met:
+
+- Redistributions must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+- Neither the name of Panic Inc nor the names of its contributors may be used to endorse or promote works derived from this software without specific prior written permission from Panic Inc.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL PANIC INC BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
 ## MP3 download encoding
 
 Downloads use the unchanged `wasm-media-encoders` 0.7.0 package in a separate worker. Its JavaScript wrapper is MIT; the compiled LAME encoder is LGPL. The original package license is kept in production dependencies. Source and rebuild recipe: https://github.com/arseneyr/wasm-media-encoders/tree/v0.7.0 . The Node entry point embeds the WASM and works offline; it does not download code from a CDN at runtime. This module is separate from the LGPL-2.1 FFmpeg executable; no FFmpeg binary or build configuration was changed for MP3 support. MP3 is lossy, including when the input source is FLAC. The previous JavaScript lamejs dependency has been removed.

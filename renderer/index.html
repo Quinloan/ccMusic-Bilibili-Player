@@ -55,6 +55,7 @@
         <img id="avatarImg" src="../assets/icon.png" alt="" />
       </button>
       <div class="win-btns">
+        <button id="wMini" title="小窗模式（Ctrl+Shift+M）" aria-label="切换小窗模式"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2" y="3" width="16" height="14" rx="2"/><path d="M10 10h6v5h-6z" fill="currentColor" stroke="none"/></svg></button>
         <button id="wMin" title="最小化"><svg viewBox="0 0 10 10"><path d="M1 5h8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg></button>
         <button id="wMax" title="最大化 / 还原"><svg viewBox="0 0 10 10"><rect x="1.5" y="1.5" width="7" height="7" rx="1" stroke="currentColor" fill="none" stroke-width="1.2"/></svg></button>
         <button id="wClose" class="close" title="关闭"><svg viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg></button>
@@ -212,6 +213,13 @@
   </aside>
 </div>
 
+<div id="miniChrome" class="mini-chrome" hidden>
+  <span class="mini-brand">ccMusic</span><span class="grow"></span>
+  <button id="miniLayout" title="切换为方形小窗" aria-label="切换为方形小窗"><svg class="mini-layout-square" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="4" width="16" height="16" rx="4"/></svg><svg class="mini-layout-compact" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="7" width="18" height="10" rx="3"/></svg></button>
+  <button id="miniPin" title="取消置顶" aria-label="窗口置顶" aria-pressed="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="m8 3 8 0-1 7 3 3v2H6v-2l3-3-1-7Zm4 12v6"/></svg></button>
+  <button id="miniRestore" title="返回主界面" aria-label="返回主界面"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M9 3H3v6m12-6h6v6M3 15v6h6m12-6v6h-6"/></svg></button>
+  <button id="miniClose" title="关闭窗口" aria-label="关闭窗口"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+</div>
 <footer class="bar">
   <img id="bCover" class="cover" />
   <div class="now">
@@ -234,13 +242,13 @@
   </div>
   <div class="seek">
     <span class="time" id="cur">00:00</span>
-    <input id="seek" type="range" min="0" max="1000" value="0" />
+    <input id="seek" type="range" min="0" max="1000" value="0" aria-label="播放进度" />
     <span class="time" id="dur">00:00</span>
   </div>
   <div class="right">
     <div class="quality-info"><span id="actualQuality" class="actual-quality" hidden></span><button id="quality" class="quality" title="优先选择无损音质" aria-pressed="true"></button></div>
     <span class="volico"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M11 4 5 9H2v6h3l6 5Zm4 4a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/></svg></span>
-    <input id="vol" type="range" min="0" max="100" value="80" />
+    <input id="vol" type="range" min="0" max="100" value="80" aria-label="音量" />
   </div>
 </footer>
 <div id="undoBar" class="undo-bar" hidden role="status"><span id="undoText"></span><button id="undoButton">撤销</button><button id="undoClose" title="关闭">×</button></div>
@@ -443,6 +451,18 @@
 </div>
 
 <audio id="audio"></audio>
+<div id="downloadModeModal" class="modal" hidden>
+  <form id="downloadModeForm" class="modal-box add-box" role="dialog" aria-modal="true" aria-labelledby="downloadModeTitle">
+    <h3 id="downloadModeTitle">下载方式</h3>
+    <p id="downloadModeSummary" class="add-summary"></p>
+    <fieldset class="add-options">
+      <legend>长视频下载方式</legend>
+      <label class="add-option"><input id="downloadModeSplit" type="radio" name="downloadMode" value="split" checked /><span><strong>智能分歌</strong><small>确认分段、识别歌名后，选择单曲下载为 MP3</small></span></label>
+      <label class="add-option"><input id="downloadModeWhole" type="radio" name="downloadMode" value="whole" /><span><strong>整段下载</strong><small>将完整视频保存为一个 MP3 文件</small></span></label>
+    </fieldset>
+    <div class="add-actions"><button id="downloadModeCancel" type="button">取消</button><button class="primary" type="submit">继续</button></div>
+  </form>
+</div>
 <div id="downloadPickerModal" class="modal" hidden role="dialog" aria-modal="true" aria-labelledby="downloadPickerTitle">
   <div class="modal-box download-picker-box">
     <h3 id="downloadPickerTitle">选择要下载的歌曲</h3>

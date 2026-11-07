@@ -6,13 +6,13 @@ const { songCoverUrl, songTitleIntent, createMetadataQueue } = require('./render
 const simplify = require('opencc-js').Converter({ from: 'tw', to: 'cn' });
 const normalize = value => simplify(String(value || '').normalize('NFKC').toLowerCase()).replace(/[^\p{L}\p{N}]/gu, '');
 // Versions are part of the recording identity. Never erase “治愈版”, Live, etc.
-const titleKey = value => normalize(String(value || '').replace(/[（(\[]\s*(?:original(?:\s+version)?|原版|原唱|官方音源|\d{4}\s*remaster(?:ed)?)\s*[）)\]]/gi, ''));
+const titleKey = value => normalize(String(value || '').normalize('NFKC').replace(/[（(\[]\s*(?:explicit(?:\s+(?:version|lyrics|content))?|original(?:\s+version)?|原版|原唱|官方音源|\d{4}\s*remaster(?:ed)?)\s*[）)\]]/gi, ''));
 const artistNames = value => String(value || '').split(/\/|、|&|,|，|\bfeat\.?\s*/i).map(normalize).filter(Boolean).sort();
 const sameArtists = (a, b) => {
   const wanted = artistNames(a), found = artistNames(b);
   return wanted.length > 0 && wanted.length === found.length && wanted.every((name, i) => name === found[i]);
 };
-const alternateVersion = value => /\blive\b|现场|演唱会|翻唱|\bcover\b|remix|混音|伴奏|instrumental|钢琴|piano|治愈版|深情版|加速|降速|slowed|sped\s*up|rehearsal|demo|\bAI\b/i.test(String(value || ''));
+const alternateVersion = value => /\blive\b|现场|演唱会|翻唱|\bcover\b|remix|混音|伴奏|instrumental|钢琴|piano|治愈版|深情版|加速|降速|slowed|sped\s*up|rehearsal|demo|\bclean(?:\s+version)?\b|\bcensored\b|\bAI\b/i.test(String(value || ''));
 function sameSong(match, name, artist) {
   const title = titleKey(match.name);
   if (!title || title !== titleKey(name)) return false;
@@ -118,6 +118,11 @@ function createArtworkResolver({ request = fetch, dispatcher, cacheFile, now = D
       if (!explicitVersion && alternateVersion(song.name + ' ' + (song.album || ''))) return { song, score };
       for (const candidate of intent.candidates) {
         if (sameSong(candidate, song.name, song.artist)) score = Math.max(score, candidate.artist ? 140 : 60);
+        // A collection artist identifies the lead performer, not necessarily
+        // every credited collaborator (e.g. The Weeknd / Daft Punk). Exact full
+        // credits rank higher; fingerprint/explicit artist inputs remain strict.
+        const credits = String(song.artist || '').split(/\/|、|&|,|，|\bfeat\.?\s*/i).map(normalize).filter(Boolean);
+        if (intent.artistFromParent && candidate.artist && titleKey(candidate.name) === titleKey(song.name) && credits.length > 1 && credits[0] === normalize(candidate.artist)) score = Math.max(score, 100);
         const context = normalize(intent.raw + ' ' + intent.parentArtist);
         const singers = artistNames(song.artist);
         if (!candidate.artist && titleKey(candidate.name) === titleKey(song.name) && singers.length && singers.every(a => a.length >= 2 && context.includes(a))) score = Math.max(score, 120);
@@ -128,7 +133,7 @@ function createArtworkResolver({ request = fetch, dispatcher, cacheFile, now = D
       return { song, score };
     }).filter(hit => hit.score).sort((a, b) => b.score - a.score);
     const best = ranked[0];
-    if (best?.score <= 60 && ranked.some(hit => hit.score === best.score && normalize(hit.song.artist) !== normalize(best.song.artist))) return null;
+    if (best?.score <= 100 && ranked.some(hit => hit.score === best.score && normalize(hit.song.artist) !== normalize(best.song.artist))) return null;
     if (!best) return null;
     const { album, ...metadata } = best.song;
     return metadata;

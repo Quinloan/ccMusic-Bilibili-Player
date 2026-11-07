@@ -3,13 +3,14 @@
 // 因此不需要任何本地代理中转，音频流由 Chromium 直连 B 站 CDN。
 const {
   app, BrowserWindow, ipcMain, session, shell, Menu, clipboard, dialog,
-  Tray, nativeImage, globalShortcut,
+  Tray, nativeImage, globalShortcut, screen,
 } = require('electron');
 const { createHash } = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
+const { createWindowMode } = require('./window-mode.cjs');
 
 // GitHub 仓库（用于「关于」页与检查更新）
 const GITHUB_REPO = process.env.CCMUSIC_REPO || 'Quinloan/ccMusic-Bilibili-Player';
@@ -778,12 +779,33 @@ ipcMain.handle('win:minimize', (e) => {
 ipcMain.handle('win:maxToggle', (e) => {
   const w = BrowserWindow.fromWebContents(e.sender);
   if (!w) return;
+  if (w === mainWin && windowMode?.snapshot().mini) return windowMode.setMini(false);
   if (w.isMaximized()) w.unmaximize();
   else w.maximize();
 });
 ipcMain.handle('win:close', (e) => {
   const w = BrowserWindow.fromWebContents(e.sender);
   if (w) w.close();
+});
+function windowModeFor(event) {
+  if (BrowserWindow.fromWebContents(event.sender) !== mainWin || !windowMode) throw new Error('窗口尚未就绪');
+  return windowMode;
+}
+ipcMain.handle('win:modeState', event => windowModeFor(event).snapshot());
+ipcMain.handle('win:mini', (event, on) => windowModeFor(event).setMini(on));
+ipcMain.handle('win:pin', (event, on) => windowModeFor(event).setPinned(on));
+ipcMain.handle('win:miniLayout', (event, layout) => windowModeFor(event).setLayout(layout));
+const miniPalette = require('./cover-palette.cjs').createPaletteResolver({
+  request: async (url, options) => { await netInit(); return ufetch(url, { ...options, dispatcher: agent }); },
+  decode: bytes => {
+    const image = nativeImage.createFromBuffer(bytes);
+    if (image.isEmpty()) return null;
+    return { pixels: image.resize({ width: 48, height: 48, quality: 'good' }).toBitmap(), width: 48, height: 48 };
+  },
+});
+ipcMain.handle('win:coverColor', (event, url) => {
+  const mode = windowModeFor(event);
+  return mode.snapshot().mini ? miniPalette(url) : null;
 });
 
 // 托盘 / 全局媒体键
@@ -930,6 +952,7 @@ function setupAutoUpdater() {
 
 // ---------------------------------------------------------------- 托盘 & 全局媒体键
 let mainWin = null;
+let windowMode = null;
 let tray = null;
 let quitting = false;          // 真正退出（托盘菜单退出）时为 true
 let closeToTray = true;        // 关闭窗口时最小化到托盘，继续后台播放
@@ -959,6 +982,7 @@ function quitApp() {
 function buildTrayMenu() {
   return Menu.buildFromTemplate([
     { label: '显示 / 隐藏 ccMusic', click: () => toggleWindow() },
+    { label: '切换小窗 / 主界面', click: () => { if (windowMode) { windowMode.setMini(!windowMode.snapshot().mini); toggleWindow(); } } },
     { type: 'separator' },
     { label: '播放 / 暂停', click: () => sendMedia('playPause') },
     { label: '上一首', click: () => sendMedia('prev') },
@@ -1020,8 +1044,9 @@ function createWindow() {
     minHeight: 600,
     title: 'ccMusic',
     frame: false, // 自绘标题栏
+    transparent: true, // 仅为小窗圆角外侧留空，窗口内部使用不透明 Material 背景
     show: false, // 内容就绪后再显示，避免“先弹白窗再干等”
-    backgroundColor: '#f7f7f9',
+    backgroundColor: '#00000000', // 完整界面仍由 renderer 的不透明背景覆盖
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -1031,6 +1056,12 @@ function createWindow() {
   });
 
   mainWin = win;
+  const mode = createWindowMode({ win, screen,
+    preferences: path.join(app.getPath('userData'), 'window-layout.json'),
+    emit: state => { if (!win.isDestroyed()) win.webContents.send('win:mode', state); },
+  });
+  windowMode = mode;
+  win.once('closed', () => { mode.dispose(); if (windowMode === mode) windowMode = null; });
   // 开发期：Ctrl+R / F5 直接刷新界面，改了渲染端代码连重启都不用
   if (!app.isPackaged) {
     win.webContents.on('before-input-event', (e, input) => {

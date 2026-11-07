@@ -22,9 +22,87 @@ async function manageDownloads(action, batchId) {
 }
 let pendingDownload = null, resumeDownload = null, downloadBusy = false, downloadFocus = null;
 let downloadPicker = null;
-function openDownloadPicker(items, source = '当前歌单') {
+let downloadModeResolve = null, downloadModeFocus = null;
+const canSplitDownload = item => !item.split && +item.duration >= SPLIT_MIN_DURATION;
+function chooseDownloadMode(items) {
+  if (downloadModeResolve) return Promise.resolve(null);
+  downloadModeFocus = document.activeElement;
+  $('#downloadModeSummary').textContent = items.length === 1 ? items[0].title : `已选 ${items.length} 首（长视频可智能分歌）`;
+  $('#downloadModeSplit').checked = true;
+  $('#downloadModeModal').hidden = false;
+  $('#downloadModeSplit').focus();
+  return new Promise(resolve => { downloadModeResolve = resolve; });
+}
+function closeDownloadMode(mode = null) {
+  $('#downloadModeModal').hidden = true;
+  const resolve = downloadModeResolve; downloadModeResolve = null;
+  if (downloadModeFocus?.isConnected) downloadModeFocus.focus();
+  downloadModeFocus = null; resolve?.(mode);
+}
+async function runDownloadSplit(item) {
+  // This source belongs to the task, never to the user's playlists or queue.
+  const source = { ...item };
+  await runSplitTask(null, source, source.description || '', null, 'download');
+}
+function splitDownloadItems(task) {
+  const items = task.result.tracks.map((track, index) => ({
+    ...task.item, title: track.title || `曲目 ${index + 1}`, artist: track.artist || '',
+    vtitle: task.item.vtitle || task.item.title, identifySource: track.source || '',
+    neteaseId: track.neteaseId || '', songCover: LibraryModel.songCoverUrl(track.songCover),
+    split: true, splitBatch: task.id, startSec: track.start, endSec: track.end,
+    duration: +(track.end - track.start).toFixed(3), splitFragments: undefined,
+    boundaryLocked: !!track.boundaryLocked || ['manual', 'description'].includes(track.source),
+    originalDuration: task.result.duration || task.item.duration,
+  }));
+  for (let i = 0; i + 1 < items.length; i++) {
+    const left = items[i], right = items[i + 1];
+    if (!LibraryModel.canMergeFragments(left, right)) continue;
+    items.splice(i, 2, { ...left, endSec: right.endSec, duration: +(right.endSec - left.startSec).toFixed(3),
+      songCover: left.songCover || right.songCover,
+      splitFragments: [...LibraryModel.fragmentRanges(left), ...LibraryModel.fragmentRanges(right)] });
+    i--;
+  }
+  return items;
+}
+function selectSplitDownloads(task) {
+  openDownloadPicker(splitDownloadItems(task), task.item.title, { selectAll: true, taskId: task.id });
+}
+async function runDownloadRecognition(task) {
+  const runId = uniqueId(); task.runId = runId; task.state = 'running'; task.error = '';
+  task.downloadPhase = 'identify'; task.progress = { stage: 'identify', done: 0, total: task.result.tracks.length };
+  $('#downloadsPanel').hidden = true; $('#queuePanel').hidden = true; $('#tasksPanel').hidden = false;
+  renderTasks();
+  try {
+    const tracks = task.result.tracks.map(track => ({ ...track }));
+    if (tracks.some(track => !track.title && !track.checked)) {
+      const result = await B.splitAnalyze(task.item.bvid, task.item.cid, undefined, task.description, runId,
+        { mode: 'recognize', sessionId: task.result.sessionId, tracks });
+      if (task.runId !== runId || task.state !== 'running') return;
+      result.tracks.forEach((track, index) => applyDownloadRecognition(task, index, track));
+      task.result.warnings = result.warnings || [];
+    }
+    task.runId = null; task.state = 'download-ready';
+    if (task.result.sessionId) B.splitRelease(task.result.sessionId).catch(() => {});
+    delete task.result.sessionId;
+    renderTasks();
+    toast('分歌完成，可以选择歌曲下载');
+    // Keep results available in the task panel when another dialog is in use.
+    if (!document.querySelector('.modal:not([hidden])')) selectSplitDownloads(task);
+  } catch (error) {
+    if (task.runId !== runId || task.state !== 'running') return;
+    task.runId = null; task.state = 'error'; task.error = error.message;
+    renderTasks();
+  }
+}
+function applyDownloadRecognition(task, index, track) {
+  const expected = task.result?.tracks[index];
+  if (expected && expected.start === track.start && expected.end === track.end && expected.source !== 'manual') {
+    task.result.tracks[index] = { ...track, checked: true };
+  }
+}
+function openDownloadPicker(items, source = '当前歌单', options = {}) {
   if (!items?.length) return toast('这里还没有可下载的歌曲');
-  downloadPicker = { items: items.map(item => ({ ...item })), selected: new Set(), focus: document.activeElement };
+  downloadPicker = { items: items.map(item => ({ ...item })), selected: new Set(options.selectAll && items.length <= 100 ? items.map((_, i) => i) : []), focus: document.activeElement, taskId: options.taskId };
   $('#downloadPickerSource').textContent = `${source} · 共 ${items.length} 首，勾选想下载的歌曲`;
   $('#downloadPickerQuery').value = '';
   $('#downloadPickerModal').hidden = false;
@@ -130,26 +208,53 @@ async function performDownload(operation, allowLimited = false) {
     }
     if (result.cancelled) return false;
     for (const task of result.tasks || []) if (!downloadDismissedIds.has(task.id) && !downloadTasks.has(task.id)) downloadTasks.set(task.id, task);
+    if (operation.sourceTaskId) {
+      const task = splitTasks.get(operation.sourceTaskId);
+      if (task) dismissSplitTask(task);
+    }
     renderDownloads(); showDownloads(); toast('已加入下载队列'); return true;
   } catch (error) { toast('下载失败：' + error.message); return false; }
   finally { downloadBusy = false; }
 }
-async function requestDownloads(items) {
+async function requestDownloads(items, options = {}) {
   if (!items.length) return toast('先选择曲目');
   if (items.length > 100) return toast('每批最多下载 100 首，请分批选择');
-  return performDownload({ items: items.map(item => ({ ...item, artist: item.artist || '' })) });
+  if (!options.whole && items.some(canSplitDownload)) {
+    const mode = await chooseDownloadMode(items);
+    if (!mode) return false;
+    if (mode === 'split') {
+      const long = items.filter(canSplitDownload), whole = items.filter(item => !canSplitDownload(item));
+      if (splitTasks.size + long.length > 20) return toast('任务列表已满，请先处理已有任务或减少选择');
+      for (const item of long) void runDownloadSplit(item);
+      if (whole.length) return requestDownloads(whole, { whole: true });
+      return false;
+    }
+  }
+  return performDownload({ items: items.map(item => ({ ...item, artist: item.artist || '' })), sourceTaskId: options.taskId });
 }
 async function downloadSearchItem(result) {
   try {
     const meta = await B.video(result.bvid);
     if (meta.parts?.length > 1 || meta.season?.episodes?.length > 1) { openPartsPicker(meta); return; }
     const part = meta.parts?.[0];
-    await requestDownloads([{ bvid: meta.bvid, cid: part?.cid || meta.cid, page: part?.page || 1, title: meta.title, duration: part?.duration || meta.duration }]);
+    await requestDownloads([{ bvid: meta.bvid, cid: part?.cid || meta.cid, page: part?.page || 1, title: meta.title, vtitle: meta.title, up: meta.up, cover: meta.cover, description: meta.desc, duration: part?.duration || meta.duration }]);
   } catch (error) { toast('无法准备下载：' + error.message); }
 }
 function cancelPendingDownloadLogin() { resumeDownload = null; }
 function resumeDownloadsAfterLogin() { const operation = resumeDownload; resumeDownload = null; if (operation) return performDownload(operation); }
 function initDownloads() {
+  $('#downloadModeForm').onsubmit = event => { event.preventDefault(); closeDownloadMode($('#downloadModeSplit').checked ? 'split' : 'whole'); };
+  $('#downloadModeCancel').onclick = () => closeDownloadMode();
+  $('#downloadModeModal').onclick = event => { if (event.target.id === 'downloadModeModal') closeDownloadMode(); };
+  $('#downloadModeModal').onkeydown = event => {
+    if (event.key === 'Escape') { event.stopPropagation(); closeDownloadMode(); }
+    if (event.key === 'Tab') {
+      const controls = [...$('#downloadModeModal').querySelectorAll('input:checked, button')], at = controls.indexOf(document.activeElement);
+      if (at < 0 || (event.shiftKey ? at === 0 : at === controls.length - 1)) {
+        event.preventDefault(); controls[event.shiftKey ? controls.length - 1 : 0]?.focus();
+      }
+    }
+  };
   $('#libPickDownload').onclick = () => openDownloadPicker(folder()?.items, folder()?.name);
   $('#downloadPickerQuery').oninput = renderDownloadPicker;
   $('#downloadPickerList').onchange = event => {
@@ -165,7 +270,8 @@ function initDownloads() {
   $('#downloadPickerConfirm').onclick = () => {
     if (!downloadPicker || !downloadPicker.selected.size || downloadPicker.selected.size > 100) return;
     const items = downloadPicker.items.filter((_, index) => downloadPicker.selected.has(index));
-    closeDownloadPicker(); requestDownloads(items);
+    const taskId = downloadPicker.taskId;
+    closeDownloadPicker(); requestDownloads(items, { taskId });
   };
   $('#downloadPickerModal').onclick = event => { if (event.target.id === 'downloadPickerModal') closeDownloadPicker(); };
   $('#downloadPickerModal').onkeydown = event => {

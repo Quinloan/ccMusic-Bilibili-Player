@@ -1,6 +1,6 @@
 {
   "name": "ccmusic",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "description": "ccMusic — B 站纯音频连播桌面端：只取音频轨流式播放，自定义收藏夹自动连播",
   "main": "main.js",
   "scripts": {
@@ -15,6 +15,7 @@
     "electron-builder": "^26.15.3"
   },
   "dependencies": {
+    "@material/material-color-utilities": "0.3.0",
     "electron-updater": "^6.8.9",
     "opencc-js": "1.4.2",
     "qrcode": "^1.5.4",
@@ -26,7 +27,7 @@
     "appId": "com.ccmusic.app",
     "productName": "ccMusic",
     "directories": {
-      "output": "release-v1.7.0"
+      "output": "release-v1.8.0"
     },
     "artifactName": "${productName}-Setup-${version}.${ext}",
     "publish": {
@@ -53,6 +54,8 @@
       "mp3-worker.cjs",
       "download-ipc.cjs",
       "app-updates.cjs",
+      "window-mode.cjs",
+      "cover-palette.cjs",
       "LICENSE",
       "THIRD-PARTY-NOTICES.md"
     ],

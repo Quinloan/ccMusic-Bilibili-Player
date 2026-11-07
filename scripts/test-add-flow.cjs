@@ -73,7 +73,9 @@ async function run() {
   // Multi-P addition must go through the same destination dialog; cancellation retains the picker.
   context.pmSelectedKeys = () => ['P1'];
   context.pmEntries = () => [{ key: 'P1', bvid: 'parts', cid: 7, page: 1, name: 'P1', duration: 1300 }];
-  context.pmMode = 'parts'; let closed = 0;
+  context.pmMode = 'parts';
+  context.pmMeta = { parts: [{ page: 1 }, { page: 2 }], desc: '多 P 合集' };
+  let closed = 0;
   context.closePartsPicker = () => closed++;
   vm.runInContext(source.slice(source.indexOf('async function pmCommit('), source.indexOf('// 打开某个视频的全部分 P')), context);
   const parts = context.pmCommit('add');

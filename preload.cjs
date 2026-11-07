@@ -37,6 +37,12 @@ contextBridge.exposeInMainWorld('api', {
   winMin: () => ipcRenderer.invoke('win:minimize'),
   winMaxToggle: () => ipcRenderer.invoke('win:maxToggle'),
   winClose: () => ipcRenderer.invoke('win:close'),
+  winModeState: () => ipcRenderer.invoke('win:modeState'),
+  winMini: on => ipcRenderer.invoke('win:mini', on),
+  winPin: on => ipcRenderer.invoke('win:pin', on),
+  winMiniLayout: layout => ipcRenderer.invoke('win:miniLayout', layout),
+  winCoverColor: url => ipcRenderer.invoke('win:coverColor', url),
+  onWinMode: callback => ipcRenderer.on('win:mode', (_event, state) => callback(state)),
 
   // 系统托盘 / 全局媒体键
   onMediaCmd: (cb) => ipcRenderer.on('media:cmd', (_e, cmd) => cb(cmd)),

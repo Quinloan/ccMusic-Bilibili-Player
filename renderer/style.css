@@ -429,6 +429,8 @@ button.primary:hover { opacity: .9; color: #fff; }
 .add-option { display: flex; gap: 10px; padding: 12px; margin-bottom: 8px; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; }
 .add-option:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
 .add-option input { margin: 5px 0 0; accent-color: var(--accent); }
+#downloadModeModal .add-option { align-items: center; }
+#downloadModeModal .add-option input { flex-shrink: 0; width: 14px; height: 14px; margin: 0; }
 .add-option strong, .add-option small { display: block; }
 .add-option strong { font-size: 14px; font-weight: 500; }
 .add-option small { color: var(--muted); font-size: 12px; margin-top: 3px; }
@@ -721,7 +723,8 @@ button.primary:hover { opacity: .9; color: #fff; }
 .history-meta { flex:1; min-width:0; }
 .history-title { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-bottom:5px; }
 .history-row time { font-size:12px; white-space:nowrap; }
-.download-batch-head { position:sticky; top:0; z-index:1; background:var(--panel); padding:4px 2px 12px; }
+/* Batch summaries scroll with their songs so they never cover a song title. */
+.download-batch-head { padding:4px 2px 12px; }
 .download-batch-head strong { font-size:13px; font-weight:600; }
 .download-batch-head small { display:block; margin:6px 0; color:var(--muted); font-size:12px; }
 .download-batch-head progress { width:100%; accent-color:var(--accent); }
@@ -743,3 +746,60 @@ button.primary:hover { opacity: .9; color: #fff; }
 .update-portable-tip { display:block; font-size:12px; margin-top:12px; }
 .app-update-notice { position:fixed; z-index:25; right:22px; top:70px; display:flex; align-items:center; gap:12px; padding:12px 16px; max-width:calc(100vw - 44px); border:1px solid var(--line); border-radius:12px; background:var(--panel); box-shadow:0 8px 32px #0002; font-size:13px; }
 .app-update-notice button { padding:5px 9px; }
+
+/* Compact player follows the artwork/controls pattern of Apple Music MiniPlayer.
+   The existing playback bar is rearranged; no second audio element is created. */
+.mini-chrome { height:26px; display:flex; align-items:center; padding:0 8px 0 12px; -webkit-app-region:drag; }
+.mini-brand { font-size:10px; font-weight:600; letter-spacing:.04em; color:var(--muted); }
+.mini-chrome button { -webkit-app-region:no-drag; display:flex; align-items:center; justify-content:center; width:27px; height:25px; padding:5px; border:0; background:transparent; color:var(--muted); border-radius:6px; position:relative; }
+.mini-chrome button svg { width:14px; height:14px; }
+.mini-chrome button:hover { color:var(--text); background:color-mix(in srgb,var(--text) 12%,transparent); }
+#miniPin[aria-pressed="true"] { color:var(--text); background:transparent; }
+#miniPin[aria-pressed="true"]::after { content:""; width:3px; height:3px; border-radius:50%; position:absolute; right:4px; bottom:3px; background:currentColor; }
+#miniClose:hover { color:var(--mini-error-text); background:var(--mini-error); }
+/* Opaque cover colour (option A); transparency is only outside the round outline. */
+body.mini-mode { --mini-color:222,226,234; --text:#141418; --muted:#404147; --accent:#141418; --mini-accent-text:#dee2ea; --mini-track:#b0b3ba; --mini-error:#93000a; --mini-error-text:#ffdad6; color:var(--text); background:rgb(var(--mini-color)); border:0; border-radius:20px; overflow:hidden; }
+body.mini-mode .ctrls button { color:var(--text); }
+body.mini-mode .play-status.failed { color:var(--text); }
+body.mini-mode.mini-dark .mini-chrome button:focus-visible { outline-color:var(--text); }
+.mini-layout-compact, body.mini-square .mini-layout-square { display:none; }
+body.mini-square .mini-layout-compact { display:block; }
+body.mini-mode .app, body.mini-mode #undoBar, body.mini-mode #completionNotices, body.mini-mode .app-update-notice { display:none; }
+body.mini-mode .bar { background:transparent; height:calc(100vh - 26px); width:100%; padding:4px 12px 8px; border:0; display:grid; grid-template-columns:56px minmax(0,1fr) 62px; grid-template-rows:40px 34px 20px; gap:3px 12px; align-content:center; }
+body.mini-mode .bar .cover { grid-column:1; grid-row:1 / 3; width:56px; height:56px; border-radius:9px; margin:0; align-self:center; box-shadow:0 3px 10px rgba(0,0,0,.12); }
+body.mini-mode .bar .now { grid-column:2 / 4; grid-row:1; width:100%; min-width:0; align-self:center; margin:0; }
+body.mini-mode .bar .now .t { font-size:13px; font-weight:600; line-height:1.4; }
+body.mini-mode .bar .now .u { font-size:11px; margin-top:3px; }
+body.mini-mode .bar .now:has(#playStatus:not([hidden])) .u { display:none; }
+body.mini-mode .ctrls { grid-column:2; grid-row:2; justify-content:flex-start; align-items:center; gap:10px; }
+body.mini-mode .ctrls button { display:flex; align-items:center; justify-content:center; width:28px; height:28px; padding:6px; border:0; border-radius:50%; background:transparent; }
+body.mini-mode .ctrls #play { width:32px; height:32px; background:var(--accent); color:var(--mini-accent-text,#fff); }
+body.mini-mode .ctrls button:hover { background:color-mix(in srgb,var(--text) 8%,transparent); }
+body.mini-mode .ctrls #play:hover { background:color-mix(in srgb,var(--mini-accent-text) 8%,var(--accent)); }
+body.mini-mode button:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+body.mini-mode input[type="range"] { -webkit-appearance:none; appearance:none; background:transparent; cursor:pointer; }
+body.mini-mode input[type="range"]::-webkit-slider-runnable-track { height:4px; border-radius:8px; background:linear-gradient(to right,var(--accent) 0 var(--range-progress,0%),var(--mini-track) var(--range-progress,0%) 100%); }
+body.mini-mode input[type="range"]::-webkit-slider-thumb { -webkit-appearance:none; width:10px; height:10px; border:0; border-radius:50%; margin-top:-3px; background:var(--accent); }
+body.mini-mode input[type="range"]:focus-visible { outline:2px solid var(--accent); outline-offset:2px; border-radius:8px; }
+body.mini-mode #mode, body.mini-mode #qBtn, body.mini-mode .quality-info { display:none; }
+body.mini-mode .bar .right { grid-column:3; grid-row:2; justify-content:flex-end; gap:4px; margin:0; }
+body.mini-mode .bar .right input { width:44px; height:18px; margin:0; }
+body.mini-mode .bar .right .volico svg { width:13px; height:13px; }
+body.mini-mode .seek { grid-column:1 / 4; grid-row:3; min-width:0; width:100%; gap:8px; }
+body.mini-mode .seek input { min-width:0; width:100%; height:16px; margin:0; }
+body.mini-mode .time { font-size:10px; }
+body.mini-mode .play-status { font-size:10px; margin:0; max-width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+body.mini-mode .toast { bottom:8px; padding:4px 10px; font-size:11px; max-width:calc(100vw - 20px); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+/* Both shapes share the same playback bar, media element and colour state. */
+body.mini-square .mini-chrome { height:30px; }
+body.mini-square .bar { height:calc(100vh - 30px); padding:6px 18px 12px; grid-template-columns:minmax(0,1fr); grid-template-rows:120px 40px 22px 38px 20px; gap:4px; }
+body.mini-square .bar .cover { grid-column:1; grid-row:1; width:120px; height:120px; border-radius:12px; justify-self:center; }
+body.mini-square .bar .now { grid-column:1; grid-row:2; text-align:center; }
+body.mini-square .bar .now .t { font-size:14px; }
+body.mini-square .ctrls { grid-column:1; grid-row:4; justify-content:center; gap:22px; }
+body.mini-square .ctrls button { width:29px; height:29px; }
+body.mini-square .ctrls #play { width:34px; height:34px; }
+body.mini-square .bar .right { grid-column:1; grid-row:5; justify-content:center; gap:6px; }
+body.mini-square .bar .right input { width:88px; }
+body.mini-square .seek { grid-column:1; grid-row:3; }
+@media (max-width:1000px) { .win-btns button { width:38px; } }

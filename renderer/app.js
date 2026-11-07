@@ -1048,6 +1048,8 @@ function pmUpdateSum() {
   $('#pmAdd').disabled = !keys.size;
   $('#pmPlay').disabled = !keys.size;
   $('#pmPlayOnly').disabled = !keys.size;
+  $('#pmDownload').disabled = !keys.size;
+  $('#pmDownload').textContent = all.some(e => keys.has(e.key) && canSplitDownload(e)) ? '下载所选…' : '下载所选';
 }
 
 function pmRenderList() {
@@ -1119,6 +1121,7 @@ async function pmCommit(action) {
       title: e.name, vtitle: e.vtitle || e.name, partTitle: e.partTitle || '',
       partsCount: e.partsCount,
       up: e.up, cover: e.cover, duration: e.duration,
+      description: pmMode === 'parts' && (pmMeta.parts || []).length === 1 ? pmMeta.desc || '' : '',
     }));
   if (action === 'download') { closePartsPicker(); await requestDownloads(all); return; }
   if (action === 'play') {
@@ -1918,6 +1921,113 @@ document.addEventListener('click', (e) => {
 });
 
 // 自绘标题栏的窗口控制
+let miniModeState = { mini: false, pinned: true, revision: -1 }, miniModeBusy = false;
+let miniCoverRequest = 0, miniCoverUrl = '';
+const miniThemeProperties = ['--mini-color', '--text', '--muted', '--accent', '--accent-soft', '--mini-accent-text', '--mini-track', '--mini-error', '--mini-error-text'];
+function clearMiniTheme() {
+  for (const name of miniThemeProperties) document.body.style.removeProperty(name);
+  for (const id of ['#seek', '#vol']) $(id).style.removeProperty('--range-progress');
+  document.body.classList.remove('mini-dark');
+}
+function refreshMiniRanges() {
+  if (!miniModeState.mini) return;
+  for (const id of ['#seek', '#vol']) {
+    const input = $(id), min = +input.min || 0, max = +input.max || 100;
+    const percent = Math.max(0, Math.min(100, (+input.value - min) / Math.max(1, max - min) * 100));
+    input.style.setProperty('--range-progress', `${percent}%`);
+  }
+}
+async function refreshMiniColor() {
+  if (!miniModeState.mini) return;
+  const source = $('#bCover').getAttribute('src') || '';
+  if (source === miniCoverUrl) return;
+  miniCoverUrl = source;
+  const ticket = ++miniCoverRequest;
+  if (!source) { clearMiniTheme(); return; }
+  try {
+    const theme = await B.winCoverColor(source);
+    if (ticket !== miniCoverRequest || !miniModeState.mini || $('#bCover').getAttribute('src') !== source) return;
+    const validColor = rgb => Array.isArray(rgb) && rgb.length === 3 && rgb.every(v => Number.isInteger(v) && v >= 0 && v <= 255);
+    if (theme && ['background', 'primary', 'secondary', 'accent', 'accentText', 'track', 'error', 'errorText'].every(key => validColor(theme[key])) && theme.opacity === 1) {
+      const css = rgb => `rgb(${rgb.join(', ')})`;
+      document.body.style.setProperty('--mini-color', theme.background.join(', '));
+      document.body.style.setProperty('--text', css(theme.primary));
+      document.body.style.setProperty('--muted', css(theme.secondary));
+      document.body.style.setProperty('--accent', css(theme.accent));
+      document.body.style.setProperty('--accent-soft', `rgba(${theme.accent.join(', ')}, .14)`);
+      document.body.style.setProperty('--mini-accent-text', css(theme.accentText));
+      document.body.style.setProperty('--mini-track', css(theme.track));
+      document.body.style.setProperty('--mini-error', css(theme.error));
+      document.body.style.setProperty('--mini-error-text', css(theme.errorText));
+      document.body.classList.toggle('mini-dark', !!theme.dark);
+    } else clearMiniTheme();
+  } catch (_) {
+    if (ticket === miniCoverRequest && miniModeState.mini && $('#bCover').getAttribute('src') === source) clearMiniTheme();
+  } // Keep the previous complete theme while loading; failures return to neutral.
+}
+new MutationObserver(() => void refreshMiniColor()).observe($('#bCover'), { attributes: true, attributeFilter: ['src'] });
+audio.addEventListener('timeupdate', refreshMiniRanges);
+for (const id of ['#seek', '#vol']) $(id).addEventListener('input', refreshMiniRanges);
+function renderWindowMode(state) {
+  if (!state || typeof state.mini !== 'boolean' || state.revision < miniModeState.revision) return;
+  const wasMini = miniModeState.mini;
+  miniModeState = state;
+  document.body.classList.toggle('mini-mode', state.mini);
+  document.body.classList.toggle('mini-square', state.mini && state.layout === 'square');
+  const layoutLabel = state.layout === 'square' ? '切换为紧凑小窗' : '切换为方形小窗';
+  $('#miniLayout').title = layoutLabel;
+  $('#miniLayout').setAttribute('aria-label', layoutLabel);
+  $('#miniChrome').hidden = !state.mini;
+  $('#miniPin').setAttribute('aria-pressed', String(state.pinned));
+  $('#miniPin').title = state.pinned ? '取消置顶' : '置顶窗口';
+  if (state.mini) {
+    refreshMiniRanges();
+    if (!wasMini) { miniCoverUrl = null; void refreshMiniColor(); }
+    for (const id of ['#queuePanel', '#tasksPanel', '#downloadsPanel', '#accountMenu', '#contextMenu']) { const node = $(id); if (node) node.hidden = true; }
+    if (!wasMini) $('#miniRestore').focus({ preventScroll: true });
+    if (!miniModeBusy && document.querySelector('.modal:not([hidden])')) void setMiniMode(false);
+  } else if (wasMini) {
+    miniCoverRequest++; miniCoverUrl = null; clearMiniTheme();
+    const modal = document.querySelector('.modal:not([hidden])');
+    (modal?.querySelector('input, button, select') || $('#wMini')).focus({ preventScroll: true });
+  }
+}
+async function setMiniMode(on) {
+  if (miniModeBusy) return;
+  if (on && document.querySelector('.modal:not([hidden])')) return toast('请先完成或关闭当前弹窗');
+  miniModeBusy = true;
+  try { renderWindowMode(await B.winMini(on)); }
+  catch (error) { toast('切换窗口失败：' + error.message); }
+  finally {
+    miniModeBusy = false;
+    if (miniModeState.mini && document.querySelector('.modal:not([hidden])')) void setMiniMode(false);
+  }
+}
+$('#wMini').onclick = () => setMiniMode(true);
+$('#miniRestore').onclick = () => setMiniMode(false);
+$('#miniClose').onclick = () => B.winClose();
+$('#miniLayout').onclick = async () => {
+  if (miniModeBusy) return;
+  miniModeBusy = true;
+  try { renderWindowMode(await B.winMiniLayout(miniModeState.layout === 'square' ? 'compact' : 'square')); }
+  catch (error) { toast('切换小窗形态失败：' + error.message); }
+  finally {
+    miniModeBusy = false;
+    if (miniModeState.mini && document.querySelector('.modal:not([hidden])')) void setMiniMode(false);
+  }
+};
+$('#miniPin').onclick = async () => {
+  try { renderWindowMode(await B.winPin(!miniModeState.pinned)); }
+  catch (error) { toast(error.message); }
+};
+for (const node of [$('#miniChrome'), $('#bCover'), $('.bar .now')]) node.addEventListener('dblclick', event => {
+  if (miniModeState.mini && !event.target.closest('button')) void setMiniMode(false);
+});
+B.onWinMode(renderWindowMode);
+B.winModeState().then(renderWindowMode).catch(() => {});
+new MutationObserver(() => {
+  if (miniModeState.mini && !miniModeBusy && document.querySelector('.modal:not([hidden])')) void setMiniMode(false);
+}).observe(document.body, { subtree: true, attributes: true, attributeFilter: ['hidden'] });
 $('#wMin').onclick = () => B.winMin();
 $('#wMax').onclick = () => B.winMaxToggle();
 $('#wClose').onclick = () => B.winClose();
@@ -2176,6 +2286,8 @@ $('#quality').onclick = () => {
 };
 
 document.onkeydown = (e) => {
+  if (e.ctrlKey && e.shiftKey && e.code === 'KeyM') { e.preventDefault(); void setMiniMode(!miniModeState.mini); return; }
+  if (miniModeState.mini && e.key === 'Escape') { e.preventDefault(); void setMiniMode(false); return; }
   if (!$('#startupLoginModal').hidden) {
     if (e.key === 'Escape') { e.preventDefault(); dismissStartupLoginReminder(); }
     if (e.key === 'Tab') {
@@ -2187,7 +2299,7 @@ document.onkeydown = (e) => {
     }
     return;
   }
-  if (!$('#downloadLoginModal').hidden || !$('#downloadPickerModal').hidden) return;
+  if (!$('#downloadLoginModal').hidden || !$('#downloadPickerModal').hidden || !$('#downloadModeModal').hidden) return;
   if (!$('#editModal').hidden || !$('#reviewModal').hidden) return;
   if (!$('#addModal').hidden) {
     if (e.key === 'Escape') { e.preventDefault(); closeAddDialog(null); }
