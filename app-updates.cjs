@@ -1,15 +1,27 @@
 // One update state machine for the settings, manual actions and background checks.
 const fs = require('node:fs'), path = require('node:path');
+function createUpdateFeeds(config = require('./update-sources.json')) {
+  const repository = String(config.domestic?.repository || '');
+  const branch = config.domestic?.branch || 'main';
+  if (repository && (!/^[a-zA-Z0-9_.-]+(?:\/[a-zA-Z0-9_.-]+)+$/.test(repository) || repository.split('/').some(p => p === '.' || p === '..'))) throw Error('无效的国内发布仓库');
+  if (!/^[a-zA-Z0-9_.-]+$/.test(branch) || branch === '.' || branch === '..') throw Error('无效的国内发布分支');
+  const { owner, repo } = config.github || {};
+  if (![owner, repo].every(value => typeof value === 'string' && /^[a-zA-Z0-9_.-]+$/.test(value))) throw Error('无效的 GitHub 发布仓库');
+  return {
+    domestic: repository ? { provider: 'generic', url: `https://cnb.cool/${repository}/-/git/raw/${branch}/updates/`, useMultipleRangeRequest: false } : null,
+    github: { provider: 'github', owner, repo, channel: 'latest', private: false },
+  };
+}
 function releaseNotes(value) {
   const text = Array.isArray(value) ? value.map(v => v.note || '').join('\n') : String(value || '');
   return text.replace(/^## (?:下载软件|下载与升级|界面示例|界面预览)[^\n]*\n[\s\S]*?(?=^## |$(?![\s\S]))/gm, '')
     .replace(/<[^>]*>/g, '').replace(/!\[[^\]]*\]\([^)]*\)/g, '').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
     .replace(/^#{1,6}\s+/gm, '').replace(/\*\*|`/g, '').slice(0, 20000).trim();
 }
-function createAppUpdates({ updater, version, preferences, emit = () => {}, beforeInstall = async () => {}, installFailed = () => {}, timers = globalThis }) {
-  let autoCheck = null;
-  try { const saved = JSON.parse(fs.readFileSync(preferences, 'utf8')); if (typeof saved.autoCheck === 'boolean') autoCheck = saved.autoCheck; } catch (_) {}
-  let state = { revision: 0, current: version, supported: !!updater, autoCheck, status: 'idle', latest: '', notes: '', percent: 0, transferred: 0, total: 0, error: '', lastChecked: null };
+function createAppUpdates({ updater, version, preferences, feeds = createUpdateFeeds(), emit = () => {}, beforeInstall = async () => {}, installFailed = () => {}, timers = globalThis }) {
+  let autoCheck = null, source = 'domestic';
+  try { const saved = JSON.parse(fs.readFileSync(preferences, 'utf8')); if (typeof saved.autoCheck === 'boolean') autoCheck = saved.autoCheck; if (['domestic', 'github'].includes(saved.source)) source = saved.source; } catch (_) {}
+  let state = { revision: 0, current: version, supported: !!updater, source, autoCheck, status: 'idle', latest: '', notes: '', percent: 0, transferred: 0, total: 0, error: '', lastChecked: null };
   let checkPromise = null, downloadPromise = null, installing = false, initialTimer, interval;
   const snapshot = () => ({ ...state });
   const set = patch => { state = { ...state, ...patch, revision: state.revision + 1 }; emit(snapshot()); return snapshot(); };
@@ -18,15 +30,17 @@ function createAppUpdates({ updater, version, preferences, emit = () => {}, befo
   if (updater) {
     updater.autoDownload = false;
     updater.autoInstallOnAppQuit = false;
+    updater.disableDifferentialDownload = true; // Both mirrors publish full installers, no blockmap needed.
     updater.allowPrerelease = false; updater.allowDowngrade = false;
-    updater.on('update-available', info => set({ status: 'available', latest: info.version, notes: releaseNotes(info.releaseNotes), error: '', errorStage: '', percent: 0 }));
-    updater.on('update-not-available', () => set({ status: 'latest', latest: '', notes: '', error: '', errorStage: '' }));
+    updater.on('update-available', info => { if (state.status === 'checking') set({ status: 'available', latest: info.version, notes: releaseNotes(info.releaseNotes), error: '', errorStage: '', percent: 0 }); });
+    updater.on('update-not-available', () => { if (state.status === 'checking') set({ status: 'latest', latest: '', notes: '', error: '', errorStage: '' }); });
     updater.on('download-progress', progress => {
       if (state.status !== 'downloading') return;
       set({ percent: Math.min(100, Math.max(0, Number(progress.percent) || 0)), transferred: Math.max(0, Number(progress.transferred) || 0), total: Math.max(0, Number(progress.total) || 0) });
     });
-    updater.on('update-downloaded', info => set({ status: 'downloaded', latest: info.version, notes: releaseNotes(info.releaseNotes) || state.notes, percent: 100, error: '', errorStage: '' }));
+    updater.on('update-downloaded', info => { if (state.status === 'downloading') set({ status: 'downloaded', latest: info.version, notes: releaseNotes(info.releaseNotes) || state.notes, percent: 100, error: '', errorStage: '' }); });
     updater.on('error', error => {
+      if (!checkPromise && !downloadPromise && !installing && !['checking','downloading','restarting'].includes(state.status)) return;
       if (state.status === 'restarting') { installing = false; installFailed(); set({ status: 'downloaded', error: String(error?.message || error).slice(0, 500) }); }
       else fail(error, state.status === 'downloading' ? 'download' : state.errorStage || 'check');
     });
@@ -36,7 +50,12 @@ function createAppUpdates({ updater, version, preferences, emit = () => {}, befo
     if (checkPromise) return checkPromise;
     if (['available', 'downloading', 'downloaded', 'restarting'].includes(state.status)) return snapshot();
     set({ status: 'checking', error: '', errorStage: '', percent: 0, lastChecked: new Date().toISOString() });
-    checkPromise = Promise.resolve().then(() => updater.checkForUpdates()).then(() => snapshot(), error => fail(error, 'check')).finally(() => { checkPromise = null; });
+    checkPromise = Promise.resolve().then(() => {
+      const feed = feeds[state.source];
+      if (!feed) throw Error('国内更新入口尚未配置，请切换 GitHub 或稍后重试');
+      updater.setFeedURL({ ...feed });
+      return updater.checkForUpdates();
+    }).then(() => snapshot(), error => fail(error, 'check')).finally(() => { checkPromise = null; });
     return checkPromise;
   }
   async function download() {
@@ -66,13 +85,23 @@ function createAppUpdates({ updater, version, preferences, emit = () => {}, befo
     initialTimer = timers.setTimeout(tick, 15000); initialTimer?.unref?.();
     interval = timers.setInterval(tick, 4 * 60 * 60 * 1000); interval?.unref?.();
   }
+  function persist(patch) {
+    fs.mkdirSync(path.dirname(preferences), { recursive: true });
+    const partial = preferences + '.tmp'; fs.writeFileSync(partial, JSON.stringify({ autoCheck: state.autoCheck, source: state.source, ...patch })); fs.renameSync(partial, preferences);
+  }
   function configure(on) {
     if (typeof on !== 'boolean') throw Error('无效的更新设置');
-    fs.mkdirSync(path.dirname(preferences), { recursive: true });
-    const partial = preferences + '.tmp'; fs.writeFileSync(partial, JSON.stringify({ autoCheck: on })); fs.renameSync(partial, preferences);
+    persist({ autoCheck: on });
     set({ autoCheck: on }); schedule(); return snapshot();
   }
+  function setSource(value) {
+    if (!['domestic', 'github'].includes(value)) throw Error('无效的更新来源');
+    if (value === state.source) return snapshot();
+    if (checkPromise || downloadPromise || installing || ['checking','downloading','downloaded','restarting'].includes(state.status)) throw Error('请先完成当前更新，再切换来源');
+    persist({ source: value });
+    return set({ source: value, status: 'idle', latest: '', notes: '', percent: 0, transferred: 0, total: 0, error: '', errorStage: '', lastChecked: null });
+  }
   schedule();
-  return { snapshot, check, download, install, configure, dispose: stop };
+  return { snapshot, check, download, install, configure, setSource, dispose: stop };
 }
-module.exports = { createAppUpdates, releaseNotes };
+module.exports = { createAppUpdates, createUpdateFeeds, releaseNotes };

@@ -4,11 +4,11 @@
 
 ## 安装
 
-**[下载解压即用 ZIP：ccMusic-1.8.0-Windows-x64.zip](https://github.com/Quinloan/ccMusic-Bilibili-Player/releases/download/v1.8.0/ccMusic-1.8.0-Windows-x64.zip)**，解压整个文件夹后双击 `ccMusic.exe`。ZIP 的应用内更新会转为安装版；如需继续免安装使用，请手动下载新版 ZIP。
+**[国内下载解压即用 ZIP：ccMusic-1.8.0-Windows-x64.zip](https://cnb.cool/Quinloan/ccMusic/-/releases/download/v1.8.0/ccMusic-1.8.0-Windows-x64.zip)** · [GitHub 备用](https://github.com/Quinloan/ccMusic-Bilibili-Player/releases/download/v1.8.0/ccMusic-1.8.0-Windows-x64.zip)。解压整个文件夹后双击 `ccMusic.exe`。ZIP 的应用内更新会转为安装版；如需继续免安装使用，请手动下载新版 ZIP。
 
-需要安装的用户可下载 [Windows 安装包](https://github.com/Quinloan/ccMusic-Bilibili-Player/releases/download/v1.8.0/ccMusic-Setup-1.8.0.exe)，适用于 Windows 10/11 x64。覆盖安装保留本机歌单和登录状态。`latest.yml` 供自动更新使用，无需手动下载。默认不捆绑 Whisper，无需另外注册识曲服务账号。
+需要安装的用户可下载 [Windows 安装包（国内）](https://cnb.cool/Quinloan/ccMusic/-/releases/download/v1.8.0/ccMusic-Setup-1.8.0.exe) · [GitHub 备用](https://github.com/Quinloan/ccMusic-Bilibili-Player/releases/download/v1.8.0/ccMusic-Setup-1.8.0.exe)，适用于 Windows 10/11 x64。覆盖安装保留本机歌单和登录状态。`latest.yml` 供自动更新使用，无需手动下载。默认不捆绑 Whisper，无需另外注册识曲服务账号。
 
-v1.8.0 新增紧凑/方形小窗、封面主色背景和直接下载时的智能分歌，完善下载窗口布局，并修复部分欧美歌曲的歌手与专辑封面补全。完整说明见 [v1.8.0 发布说明](RELEASE_NOTES_v1.8.0.md)。
+v1.8.0 新增紧凑/方形小窗、封面主色背景和直接下载时的智能分歌，完善下载窗口布局，并修复部分欧美歌曲的歌手与专辑封面补全。2026-11-07 更新下载包，补入默认国内、可切换 GitHub 的双源更新；此前已安装的 v1.8.0 请重新下载覆盖安装一次，同版本不会触发升级提醒。完整说明见 [v1.8.0 发布说明](RELEASE_NOTES_v1.8.0.md)。
 
 ## 功能
 
@@ -34,7 +34,7 @@ v1.8.0 新增紧凑/方形小窗、封面主色背景和直接下载时的智能
 
 11. **最近播放**：记录成功播放的歌曲，最近听过的排在前面；支持查找、再次播放、移除和清空，最多保留500首，重启仍保留。
 
-12. **应用内更新**：右上角头像 →「检查更新」，查看说明后确认下载，显示进度、失败可重试，再点击「重启完成更新」。自动检查可以关闭，普通退出不会自动安装；尚有下载、分歌和识曲任务时，需要先完成或取消任务。run.bat 测试模式不下载安装更新。
+12. **应用内更新**：默认国内更新源，可切换 GitHub 并记住选择。右上角头像 →「检查更新」，查看说明后确认下载，显示进度、失败可重试，再点击「重启完成更新」。自动检查可以关闭，普通退出不会自动安装；尚有下载、分歌和识曲任务时，需要先完成或取消任务。run.bat 测试模式不下载安装更新。
 
 13. **小窗播放**：紧凑与方形两种尺寸，支持置顶、封面主色背景、曲目切换、进度和音量控制；切换小窗继续原有播放。可用标题栏按钮、Ctrl+Shift+M 或托盘菜单切换。
 
@@ -46,15 +46,15 @@ v1.8.0 新增紧凑/方形小窗、封面主色背景和直接下载时的智能
 
 首页、分歌和歌单示例沿用之前提供的截图；小窗为本版布局示例，展示示例曲目。
 
-![首页音乐推荐](https://raw.githubusercontent.com/Quinloan/ccMusic-Bilibili-Player/main/docs/screenshots/01-home.png)
+![首页音乐推荐](docs/screenshots/01-home.png)
 
-![智能分割与加入歌单](https://raw.githubusercontent.com/Quinloan/ccMusic-Bilibili-Player/main/docs/screenshots/02-smart-split.png)
+![智能分割与加入歌单](docs/screenshots/02-smart-split.png)
 
-![歌单分组与歌曲资料](https://raw.githubusercontent.com/Quinloan/ccMusic-Bilibili-Player/main/docs/screenshots/03-playlist.png)
+![歌单分组与歌曲资料](docs/screenshots/03-playlist.png)
 
-![紧凑小窗示例](https://raw.githubusercontent.com/Quinloan/ccMusic-Bilibili-Player/main/docs/screenshots/04-mini-compact.png)
+![紧凑小窗示例](docs/screenshots/04-mini-compact.png)
 
-![方形小窗示例](https://raw.githubusercontent.com/Quinloan/ccMusic-Bilibili-Player/main/docs/screenshots/05-mini-square.png)
+![方形小窗示例](docs/screenshots/05-mini-square.png)
 
 ## 数据
 

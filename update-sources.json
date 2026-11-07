@@ -1,0 +1,10 @@
+{
+  "domestic": {
+    "repository": "Quinloan/ccMusic",
+    "branch": "main"
+  },
+  "github": {
+    "owner": "Quinloan",
+    "repo": "ccMusic-Bilibili-Player"
+  }
+}

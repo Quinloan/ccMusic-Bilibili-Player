@@ -54,6 +54,7 @@
       "mp3-worker.cjs",
       "download-ipc.cjs",
       "app-updates.cjs",
+      "update-sources.json",
       "window-mode.cjs",
       "cover-palette.cjs",
       "LICENSE",

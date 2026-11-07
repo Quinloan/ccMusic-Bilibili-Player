@@ -736,6 +736,7 @@ button.primary:hover { opacity: .9; color: #fff; }
 .task-toolbar button:disabled { opacity:.4; cursor:default; }
 .batch-actions { display:flex; gap:8px; margin-top:8px; }
 .app-update-card { margin-top:12px; padding:16px; border:1px solid var(--line); border-radius:12px; }
+#updateSource { padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--text); font:inherit; }
 .app-update-card progress { display:block; width:100%; margin:12px 0 6px; accent-color:var(--accent); }
 .app-update-card p { font-size:13px; margin:10px 0; }
 .app-update-card > button { margin-top:14px; }

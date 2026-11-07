@@ -1837,7 +1837,9 @@ function renderAppUpdate(state) {
   if (typeof state.autoCheck === 'boolean') { localStorage.autoCheck = state.autoCheck ? '1' : '0'; $('#autoCheck').checked = state.autoCheck; }
   const busy = ['checking', 'downloading', 'restarting'].includes(state.status);
   $('#checkBtn').disabled = busy || !state.supported;
-  if (state.lastChecked) $('#lastCheck').textContent = new Date(state.lastChecked).toLocaleString('zh-CN');
+  $('#updateSource').value = state.source === 'github' ? 'github' : 'domestic';
+  $('#updateSource').disabled = busy || state.status === 'downloaded';
+  $('#lastCheck').textContent = state.lastChecked ? new Date(state.lastChecked).toLocaleString('zh-CN') : '从未';
   const titles = { idle: `当前版本 v${state.current}`, checking: '正在检查更新…', latest: `已是最新版本 v${state.current}`, available: `发现新版本 v${state.latest}`, downloading: `正在下载更新 · ${Math.floor(state.percent || 0)}%`, downloaded: `v${state.latest} 已准备好`, restarting: '正在重启更新…', error: '更新暂时失败' };
   const canDownload = state.status === 'available' || (state.status === 'error' && state.errorStage === 'download');
   const action = state.status === 'downloaded' ? '重启完成更新' : canDownload ? (state.status === 'error' ? '重试下载' : '立即更新') : state.status === 'error' ? '重新检查' : '';
@@ -1868,12 +1870,24 @@ function renderAppUpdate(state) {
     $('#appUpdateNotice').hidden = false;
     $('#appUpdateNoticeText').textContent = state.status === 'downloaded' ? `v${state.latest} 已下载完成` : `发现新版本 v${state.latest}`;
   }
-  if (['latest', 'restarting'].includes(state.status)) $('#appUpdateNotice').hidden = true;
+  if (!state.latest || ['latest', 'restarting'].includes(state.status)) $('#appUpdateNotice').hidden = true;
 }
 async function doCheck() {
   try { renderAppUpdate(await B.checkUpdate()); }
   catch (error) { toast(error.message); }
 }
+$('#updateSource').onchange = async () => {
+  const source = $('#updateSource').value;
+  $('#updateSource').disabled = true;
+  try {
+    renderAppUpdate(await B.updateSource(source));
+    if (appUpdateState.supported) await doCheck();
+  } catch (error) {
+    $('#updateSource').value = appUpdateState?.source || 'domestic';
+    $('#updateSource').disabled = ['checking','downloading','downloaded','restarting'].includes(appUpdateState?.status);
+    toast(error.message);
+  }
+};
 async function initAppUpdates() {
   B.onUpdateState(renderAppUpdate);
   try {

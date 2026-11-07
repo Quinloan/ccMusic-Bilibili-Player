@@ -3,14 +3,16 @@ const fs = require('node:fs'), path = require('node:path'), assert = require('no
 const { createAppUpdates } = require('../app-updates.cjs');
 const root = path.resolve(__dirname, '..'), dir = fs.mkdtempSync(path.join(root, 'validation/updates-'));
 const deferred = () => { let resolve, reject; const promise = new Promise((r, j) => { resolve = r; reject = j; }); return { promise, resolve, reject }; };
+const feeds = { domestic: { provider: 'generic', url: 'https://cnb.cool/test/ccmusic/-/git/raw/main/updates/', useMultipleRangeRequest: false }, github: { provider: 'github', owner: 'Quinloan', repo: 'ccMusic-Bilibili-Player' } };
 async function run() {
   const updater = new EventEmitter(), checks = [], downloads = [], states = [], timers = new Map(); let timerId = 0, installs = 0, busy = true;
+  updater.setFeedURL = feed => { updater.selectedFeed = feed; };
   updater.checkForUpdates = () => { const gate = deferred(); checks.push(gate); return gate.promise; };
   updater.downloadUpdate = () => { const gate = deferred(); downloads.push(gate); return gate.promise; };
   updater.quitAndInstall = (silent, force) => { assert.equal(silent, true); assert.equal(force, true); installs++; };
   const preferences = path.join(dir, 'updates.json');
   const clock = { setTimeout: fn => { timers.set(++timerId, fn); return timerId; }, setInterval: fn => { timers.set(++timerId, fn); return timerId; }, clearTimeout: id => timers.delete(id), clearInterval: id => timers.delete(id) };
-  const service = createAppUpdates({ updater, version: '1.6.3', preferences, emit: s => states.push(s), timers: clock,
+  const service = createAppUpdates({ feeds, updater, version: '1.6.3', preferences, emit: s => states.push(s), timers: clock,
     beforeInstall: async () => { if (busy) throw Error('任务尚未完成'); } });
   assert.equal(service.snapshot().autoCheck, null); assert.equal(timers.size, 0);
   assert.equal(updater.autoDownload, false); assert.equal(updater.autoInstallOnAppQuit, false);
@@ -35,12 +37,12 @@ async function run() {
   updater.emit('error', Error('安装未能启动')); assert.equal(service.snapshot().status, 'downloaded');
   await service.install(); assert.equal(installs, 2, 'failed installation can retry');
   service.dispose(); assert.equal(timers.size, 0);
-  const dev = createAppUpdates({ updater: null, version: '1.7.0', preferences });
+  const dev = createAppUpdates({ feeds, updater: null, version: '1.7.0', preferences });
   assert.equal(dev.snapshot().autoCheck, false, 'preference survives restart');
   await assert.rejects(dev.download(), /测试运行/); await assert.rejects(dev.check(), /测试运行/); await assert.rejects(dev.install(), /测试运行/);
   assert.throws(() => dev.configure('false'), /无效/); dev.dispose();
-  const failure = new EventEmitter(); failure.checkForUpdates = async () => { throw Error('检查超时'); };
-  const failedCheck = createAppUpdates({ updater: failure, version: '1.7.0', preferences });
+  const failure = new EventEmitter(); failure.setFeedURL = () => {}; failure.checkForUpdates = async () => { throw Error('检查超时'); };
+  const failedCheck = createAppUpdates({ feeds, updater: failure, version: '1.7.0', preferences });
   await failedCheck.check(); assert.equal(failedCheck.snapshot().status, 'error'); assert.equal(failedCheck.snapshot().errorStage, 'check'); failedCheck.dispose();
   fs.unlinkSync(preferences);
   console.log('PASS: updater state machine, shared checks, manual download/progress/retry, no silent install, restart guard/retry, preferences/timer migration, no dev installation');

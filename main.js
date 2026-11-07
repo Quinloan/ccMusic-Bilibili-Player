@@ -934,6 +934,7 @@ let appUpdates;
 ipcMain.handle('update:state', () => appUpdates.snapshot());
 ipcMain.handle('update:check', () => appUpdates.check());
 ipcMain.handle('update:configure', (_event, on) => appUpdates.configure(on));
+ipcMain.handle('update:source', (_event, source) => appUpdates.setSource(source));
 ipcMain.handle('update:download', () => appUpdates.download());
 ipcMain.handle('update:install', () => appUpdates.install());
 function setupAutoUpdater() {
