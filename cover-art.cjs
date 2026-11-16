@@ -64,7 +64,7 @@ function createArtworkResolver({ request = fetch, dispatcher, cacheFile, now = D
   function qqSong(song) {
     let name = song.name || song.title;
     if (alternateVersion(song.subtitle) && !alternateVersion(name)) name += ` (${song.subtitle})`;
-    return { name, artist: (song.singer || []).map(a => a.name).join('/'), album: song.album?.name || '',
+    return { name, artist: (song.singer || []).map(a => a.name).join('/'), album: song.album?.name || '', qqMid: song.mid || '',
       cover: /^[a-zA-Z0-9]{5,40}$/.test(song.album?.mid || '') ? `https://y.gtimg.cn/music/photo_new/T002R300x300M000${song.album.mid}.jpg` : '' };
   }
   async function searchQQCatalog(query, signal) {

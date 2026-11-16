@@ -38,7 +38,7 @@ async function run() {
     await half.promise; await delivery;
     assert.equal(await page.getByText('批量下载 · 已保存 0/3 首', { exact: true }).isVisible(), true);
     assert.equal(await page.getByText('共用音源下载 50%', { exact: true }).isVisible(), true);
-    assert.equal(await page.locator('.task-card progress').count(), 0, 'shared source progress is not presented under one song');
+    assert.equal(await page.getByRole('progressbar', { name: '歌曲转换进度' }).count(), 0, 'shared source progress is not presented under one song');
     stream.enqueue(Buffer.alloc(50)); stream.close(); await allReady.promise; await started[0].promise; await delivery;
     assert.equal(transferCount, 1);
     assert.equal(await page.getByRole('progressbar', { name: '整批歌曲保存进度' }).getAttribute('value'), '0');

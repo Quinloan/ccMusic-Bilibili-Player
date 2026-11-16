@@ -1,9 +1,10 @@
 // Playback loudness matching, independent of the user's volume fader.
-// Weighted RMS is an estimate, not a certified BS.1770/LUFS measurement.
+// BS.1770 stereo K-weighting, 400 ms blocks and absolute/relative gating.
+// Live playback measures the portion heard so far, not a pre-scanned whole file.
 (function (root) {
-  // Leave useful output at the top of the fader. The old -20 dB estimate
-  // made even maximum volume too quiet; allow quiet masters the same lift.
-  const MIN_DB = -18, MAX_DB = 18, TARGET_DB = -14, INITIAL_DB = -3;
+  const Meter = typeof module === 'object' && module.exports ? require('./loudness-meter.js') : root.LoudnessMeter;
+  // Music playback target, not the -23 LUFS broadcast delivery target.
+  const MIN_DB = -18, MAX_DB = 18, TARGET_DB = -12, INITIAL_DB = -3;
   const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
   const amplitude = db => 10 ** (db / 20);
   function rms(channels) {
@@ -17,63 +18,98 @@
     return Math.sqrt(energy);
   }
   function createController(cachedReference) {
-    let reference = Number.isFinite(cachedReference) && cachedReference >= -50 && cachedReference <= 6 ? cachedReference : null;
-    let frames = [], samples = 0;
+    const cached = Number.isFinite(cachedReference) && cachedReference >= -70 && cachedReference <= 10 ? cachedReference : null;
+    let reference = cached, samples = 0, applied = cached === null ? INITIAL_DB : clamp(TARGET_DB - cached, MIN_DB, MAX_DB);
+    // Bounded 0.1 LU histogram retains exact energy sums: no ever-loudest reference,
+    // no moving window that starts boosting a quiet bridge after ten seconds.
+    const counts = new Float64Array(1000), sums = new Float64Array(1000);
+    let total = 0, energy = 0;
     return {
       get reference() { return reference; },
+      get gainReference() { return reference === null ? null : TARGET_DB - applied; },
       get samples() { return samples; },
-      get db() { return reference === null ? INITIAL_DB : clamp(TARGET_DB - reference, MIN_DB, MAX_DB); },
+      get db() { return applied; },
       push(level) {
-        if (!Number.isFinite(level) || level < 10 ** (-50 / 20)) return this.db;
-        const db = 20 * Math.log10(level);
-        frames.push(db); if (frames.length > 100) frames.shift();
-        samples++;
-        if (frames.length < 8) return this.db;
-        const ordered = frames.slice().sort((a, b) => a - b);
-        const gate = ordered[Math.floor(ordered.length * 0.8)] - 10;
-        const active = ordered.filter(value => value >= gate);
-        const estimate = 10 * Math.log10(active.reduce((sum, value) => sum + 10 ** (value / 10), 0) / active.length);
-        // Learn louder representative passages, but don't boost every quiet bridge,
-        // fade-out or talking gap. New songs get a fresh reference.
-        reference = reference === null ? estimate : Math.max(reference, estimate);
+        if (!Number.isFinite(level) || level <= 0) return applied;
+        const e = level * level, lu = -0.691 + 10 * Math.log10(e);
+        if (lu < -70) return applied;
+        const bin = clamp(Math.floor((lu + 70) * 10), 0, 999);
+        counts[bin]++; sums[bin] += e; total++; energy += e; samples++;
+        if (samples < 12) return applied;
+        const gate = -0.691 + 10 * Math.log10(energy / total) - 10;
+        let gatedEnergy = 0, gatedCount = 0;
+        for (let i = Math.max(0, Math.ceil((gate + 70) * 10 - 0.5)); i < counts.length; i++) {
+          gatedEnergy += sums[i]; gatedCount += counts[i];
+        }
+        if (!gatedCount) return applied;
+        reference = -0.691 + 10 * Math.log10(gatedEnergy / gatedCount);
+        const target = clamp(TARGET_DB - reference, MIN_DB, MAX_DB);
+        if (samples === 12 && cached === null) applied = target;
+        else if (cached === null || samples >= 150) {
+          // Slow recalibration; never lift a quiet passage to chase the target.
+          const change = target - applied;
+          if (change <= 0 || lu >= reference - 8) applied += clamp(change, -0.1, 0.025);
+        }
         return this.db;
       },
     };
   }
   function createGraph(context, source, volume = 1) {
-    const gain = context.createGain(), limiter = context.createDynamicsCompressor(), master = context.createGain();
+    const gain = context.createGain(), limiter = context.createGain(), master = context.createGain();
     gain.gain.value = amplitude(INITIAL_DB);
-    limiter.threshold.value = -3; limiter.knee.value = 0; limiter.ratio.value = 20;
-    limiter.attack.value = 0.001; limiter.release.value = 0.15;
-    // The compressor can overshoot on isolated transients. A final soft ceiling
-    // is exactly linear below 0.85 and bounds samples before the user's fader.
+    // Unity gain below the ceiling; no compressor's automatic makeup gain.
+    // A 5 ms lookahead limiter runs in the worklet. A final soft ceiling
+    // is linear below 0.95 and bounds samples before the user's fader.
     const headroom = context.createGain(), ceiling = context.createWaveShaper();
     headroom.gain.value = 1 / 8;
     const curve = new Float32Array(65537);
     for (let i = 0; i < curve.length; i++) {
       const x = (i * 2 / (curve.length - 1) - 1) * 8, level = Math.abs(x);
-      curve[i] = Math.sign(x) * (level <= 0.85 ? level : 0.85 + 0.13 * (1 - Math.exp(-(level - 0.85) / 0.13)));
+      curve[i] = Math.sign(x) * (level <= 0.95 ? level : 0.95 + 0.04 * (1 - Math.exp(-(level - 0.95) / 0.04)));
     }
     ceiling.curve = curve; ceiling.oversample = 'none';
     gain.connect(limiter); limiter.connect(headroom); headroom.connect(ceiling); ceiling.connect(master); master.connect(context.destination);
     master.gain.value = clamp(volume, 0, 1);
     // Meter filters are on a silent side chain; the music itself is not EQ'd.
-    const highpass = context.createBiquadFilter(), shelf = context.createBiquadFilter();
-    highpass.type = 'highpass'; highpass.frequency.value = 60; highpass.Q.value = 0.5;
-    shelf.type = 'highshelf'; shelf.frequency.value = 1500; shelf.gain.value = 4;
+    const meterInput = context.createGain(); meterInput.channelCount = 2; meterInput.channelCountMode = 'explicit';
+    source.connect(meterInput);
+    const filters = Meter.coefficients(context.sampleRate || 48000);
+    const shelf = context.createIIRFilter(filters[0].b, filters[0].a), highpass = context.createIIRFilter(filters[1].b, filters[1].a);
     const splitter = context.createChannelSplitter(2), sink = context.createGain(); sink.gain.value = 0;
-    source.connect(highpass); highpass.connect(shelf); shelf.connect(splitter);
+    meterInput.connect(shelf); shelf.connect(highpass); highpass.connect(splitter);
     const meters = [context.createAnalyser(), context.createAnalyser()];
-    const buffers = meters.map(meter => { meter.fftSize = 4096; meter.connect(sink); return new Float32Array(meter.fftSize); });
+    const buffers = meters.map(meter => { meter.fftSize = 32768; meter.connect(sink); return new Float32Array(meter.fftSize); });
     splitter.connect(meters[0], 0); splitter.connect(meters[1], 1); sink.connect(context.destination);
-    let enabled;
+    let enabled, worklet = null, generation = 0, collecting = false, pending = [];
+    function resetMeter(on = true) {
+      generation++; collecting = on; pending = [];
+      worklet?.port.postMessage({ generation, enabled: on });
+    }
+    // file:// and opaque-origin Blob module fetches fail CORS in Chromium.
+    // Load only this bundled module's source via data:, no remote/eval code.
+    const moduleUrl = context.audioWorklet ? 'data:text/javascript;charset=utf-8,' + encodeURIComponent(Meter.workletSource) : null;
+    const ready = context.audioWorklet ? context.audioWorklet.addModule(moduleUrl).then(() => {
+      worklet = new AudioWorkletNode(context, 'cc-loudness', { channelCount: 2, channelCountMode: 'explicit', outputChannelCount: [1] });
+      worklet.port.onmessage = ({ data }) => { if (collecting && data.generation === generation && pending.length < 100) pending.push(data.level); };
+      worklet.onprocessorerror = () => {
+        meterInput.disconnect(worklet); worklet.disconnect(); worklet = null; pending = [];
+        meterInput.connect(shelf); console.warn('Loudness worklet stopped; using sampled K-weighting');
+      };
+      meterInput.connect(worklet); worklet.connect(sink);
+      const peak = new AudioWorkletNode(context, 'cc-peak-limiter', { channelCount: 2, channelCountMode: 'explicit', outputChannelCount: [2] });
+      limiter.disconnect(headroom); limiter.connect(peak); peak.connect(headroom);
+      peak.onprocessorerror = () => { limiter.disconnect(peak); limiter.connect(headroom); console.warn('Peak worklet stopped; using sample ceiling'); };
+      // Snapshot fallback is no longer needed once continuous metering is ready.
+      meterInput.disconnect(shelf); resetMeter(collecting);
+    }).catch(error => console.warn('Continuous loudness meter unavailable; using sampled K-weighting', error)) : Promise.resolve();
     function smooth(param, value, time) {
       if (param.cancelAndHoldAtTime) param.cancelAndHoldAtTime(context.currentTime);
       else { param.cancelScheduledValues(context.currentTime); param.setValueAtTime(param.value, context.currentTime); }
       param.setTargetAtTime(value, context.currentTime, time);
     }
     return {
-      gain, limiter, master,
+      gain, limiter, master, ready, resetMeter,
+      get continuous() { return !!worklet; },
       setEnabled(on) {
         if (enabled === on) return;
         try { source.disconnect(gain); } catch (_) {}
@@ -88,8 +124,12 @@
       },
       measure() {
         meters.forEach((meter, i) => meter.getFloatTimeDomainData(buffers[i]));
-        return rms(buffers);
+        const n = Math.min(buffers[0].length, Math.round((context.sampleRate || 48000) * 0.4));
+        let energy = 0;
+        for (const buffer of buffers) for (let i = buffer.length - n; i < buffer.length; i++) energy += buffer[i] * buffer[i] / n;
+        return Math.sqrt(energy);
       },
+      takeMeasurements() { if (!collecting) return []; if (!worklet) return [this.measure()]; const rows = pending; pending = []; return rows; },
     };
   }
   const api = { createController, createGraph, rms, amplitude, INITIAL_DB, MIN_DB, MAX_DB, TARGET_DB };

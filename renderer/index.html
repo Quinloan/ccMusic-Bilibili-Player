@@ -3,9 +3,11 @@
 <head>
 <meta charset="UTF-8" />
 <meta http-equiv="Content-Security-Policy"
-      content="default-src 'self'; img-src * data:; media-src *; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+      content="default-src 'self'; img-src * data:; media-src * file:; style-src 'self' 'unsafe-inline'; script-src 'self' data:" />
 <title>ccMusic</title>
+<script src="themes.js"></script>
 <link rel="stylesheet" href="style.css" />
+<link rel="stylesheet" href="now-playing.css" />
 </head>
 <body>
 <div class="app">
@@ -19,13 +21,12 @@
       <svg viewBox="0 0 20 20" width="16" height="16" fill="currentColor"><path d="M10 2.6 2.5 8.4V17a.8.8 0 0 0 .8.8H8v-5.2h4V17.8h4.7a.8.8 0 0 0 .8-.8V8.4L10 2.6Z"/></svg>
       <span>首页</span>
     </div>
-    <div class="nav-item history-nav" data-view="history"><svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="10" cy="10" r="7"/><path d="M10 5v5l3 2"/></svg><span>最近播放</span></div>
-    <div class="side-label">我的歌单</div>
+    <div class="nav-item history-nav" data-view="history"><svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="10" cy="10" r="7"/><path d="M10 5v5l3 2"/></svg><span>历史记录</span></div>
+    <button id="downloadsBtn" class="nav-item downloads-nav task-btn" data-view="downloads"><svg viewBox="0 0 20 20" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M10 2v10m-4-4 4 4 4-4M3 12v5h14v-5"/></svg><span>下载记录</span><span id="downloadCount" class="activity-dot" hidden aria-hidden="true"></span></button>
+    <button id="likedNav" class="nav-item special-nav">♡　我喜欢</button>
+    <button id="localNav" class="nav-item special-nav">♫　本地音乐</button>
+    <div class="side-label playlist-heading">我的歌单<button id="libImport" title="添加歌单" aria-label="添加歌单" aria-haspopup="menu">＋</button></div>
     <div id="folders" class="folders"></div>
-    <div class="newfolder">
-      <input id="nfName" type="text" placeholder="新建歌单" maxlength="80" />
-      <button id="nfBtn" title="新建">＋</button>
-    </div>
     <div class="spacer"></div>
     <div class="side-foot">ccMusic <span id="sideVer"></span></div>
   </aside>
@@ -50,7 +51,6 @@
         </button>
       </div>
       <button id="taskBtn" class="task-btn" title="后台任务">任务<span id="taskCount" class="activity-dot" hidden aria-hidden="true"></span></button>
-      <button id="downloadsBtn" class="task-btn" title="音频下载">下载<span id="downloadCount" class="activity-dot" hidden aria-hidden="true"></span></button>
       <button id="avatarBtn" class="topbar-avatar" title="账号">
         <img id="avatarImg" src="../assets/icon.png" alt="" />
       </button>
@@ -76,7 +76,7 @@
       </section>
 
       <section id="view-history" class="view" hidden>
-        <div class="view-head"><h2>最近播放</h2><div class="head-right"><span id="historyCount" class="muted"></span><button id="historyClear">清空历史</button></div></div>
+        <div class="view-head"><h2>历史记录</h2><div class="head-right"><span id="historyCount" class="muted"></span><button id="historyClear">清空历史</button></div></div>
         <div class="library-tools"><input id="historyFilter" type="search" placeholder="在历史中查找" aria-label="查找播放历史" /></div>
         <div id="historyList" class="history-list"></div>
       </section>
@@ -91,7 +91,7 @@
         <div class="library-tools">
           <input id="libFilter" type="search" placeholder="在歌单中查找" aria-label="在歌单中查找" />
           <select id="libSort" aria-label="歌单排序"><option value="">排序…</option><option value="title">按歌名</option><option value="artist">按歌手 / UP 主</option><option value="duration">按时长</option></select>
-          <button id="libPickDownload">批量下载…</button><button id="libSelect">多选</button><button id="libRename">重命名</button><button id="libImport">导入</button><button id="libExport">导出歌单</button>
+          <button id="libPickDownload">批量下载…</button><button id="libSelect">多选</button><button id="libRename">重命名</button><button id="libExport">保存歌单</button><button id="libDuplicates">整理重复</button><button id="libSync" hidden>同步新增</button><button id="localScan" hidden>扫描文件夹</button>
           <input id="importFile" type="file" accept=".json,application/json" hidden />
         </div>
         <div id="libBatch" class="library-tools batch-tools" hidden><span id="libSelected">已选 0 首</span><button id="libAll">全选当前结果</button><button id="libMove">移动到…</button><button id="libDownload">下载所选</button><button id="libRemove">移除选中</button></div>
@@ -182,15 +182,16 @@
           </div>
         </div>
       </section>
+  <section id="downloadsPanel" class="view downloads-view" hidden aria-label="下载记录">
+    <div class="download-head"><h2>下载记录</h2><span class="grow"></span><button id="downloadCurrent">下载当前歌曲</button><button id="downloadsClose" aria-label="返回上一页">返回</button></div>
+    <div id="downloadsTools" class="task-toolbar" hidden><button id="downloadsCancelAll">取消全部</button><button id="downloadsClear">清理已结束</button></div>
+    <p id="downloadsEmpty" class="empty">还没有下载任务，可在搜索结果或歌单中点击「下载」。</p>
+    <div class="downloads-columns" aria-hidden="true"><span>歌曲 / 文件</span><span>状态</span><span>操作</span></div>
+    <div id="downloadsList"></div>
+  </section>
     </main>
   </div>
 
-  <aside id="downloadsPanel" class="qpanel downloads-panel" hidden aria-label="音频下载">
-    <div class="download-head"><strong>音频下载</strong><span class="grow"></span><button id="downloadCurrent">下载当前歌曲</button><button id="downloadsClose" aria-label="关闭下载面板">×</button></div>
-    <div id="downloadsTools" class="task-toolbar" hidden><button id="downloadsCancelAll">取消全部</button><button id="downloadsClear">清理已结束</button></div>
-    <p id="downloadsEmpty" class="empty">还没有下载任务，可在搜索结果或歌单中点击「下载」。</p>
-    <div id="downloadsList"></div>
-  </aside>
   <aside id="queuePanel" class="qpanel" hidden>
     <div class="qp-head">
       <b>待播队列</b>
@@ -209,7 +210,12 @@
   <aside id="tasksPanel" class="qpanel tasks-panel" hidden>
     <div class="qp-head"><b>后台任务</b><span class="grow"></span><button id="tasksClose" class="q-close" title="收起任务">×</button></div>
     <div id="tasksTools" class="task-toolbar" hidden><button id="tasksCancelAll">取消分歌与识曲</button><button id="tasksClear">清理已结束</button></div>
-    <div id="taskEmpty" class="empty">暂无任务</div><div id="taskList" class="task-list"></div>
+    <div id="taskEmpty" class="empty">暂无任务</div><div id="taskList" class="task-list">
+      <div id="importTaskCard" class="task-card" hidden><strong id="importTaskTitle"></strong><small id="importTaskStatus"></small>
+        <progress id="importTaskProgress" hidden></progress>
+        <div class="task-actions"><button id="importTaskOpen">查看导入</button><button id="importTaskCancel">取消导入</button></div>
+      </div><div id="importQueueCards"></div><div id="otherTaskCards"></div>
+    </div>
   </aside>
 </div>
 
@@ -220,25 +226,57 @@
   <button id="miniRestore" title="返回主界面" aria-label="返回主界面"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M9 3H3v6m12-6h6v6M3 15v6h6m12-6v6h-6"/></svg></button>
   <button id="miniClose" title="关闭窗口" aria-label="关闭窗口"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
 </div>
+<section id="nowPlaying" hidden aria-label="正在播放">
+  <img id="nowBackdrop" alt="" />
+  <div class="now-shade"></div>
+  <header class="now-header">
+    <button id="nowCollapse" title="收起播放界面" aria-label="收起播放界面"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m5 9 7 7 7-7"/></svg></button>
+    <span id="nowHeading"></span>
+    <div class="now-options-wrap">
+      <button id="nowOptions" title="播放界面设置" aria-label="播放界面设置" aria-expanded="false" aria-controls="nowSettings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m9 3 6 0 1 3 3 1 2 5-2 5-3 1-1 3H9l-1-3-3-1-2-5 2-5 3-1Z"/><circle cx="12" cy="12" r="3"/></svg></button>
+      <div id="nowSettings" hidden aria-label="播放界面设置">
+        <label class="now-setting">显示歌词<span class="switch"><input id="nowShowLyrics" type="checkbox" /><span class="slider"></span></span></label>
+        <label class="now-setting">歌词字体颜色<input id="nowLyricsColor" type="color" aria-label="歌词字体颜色" /></label>
+        <label class="now-setting">显示频谱图<span class="switch"><input id="nowShowSpectrum" type="checkbox" /><span class="slider"></span></span></label>
+        <label class="now-setting">频谱图颜色<input id="nowSpectrumColor" type="color" aria-label="频谱图颜色" /></label>
+        <label class="now-setting">显示封面<span class="switch"><input id="nowShowCover" type="checkbox" /><span class="slider"></span></span></label>
+        <label class="now-setting">显示虚化背景<span class="switch"><input id="nowShowBlur" type="checkbox" /><span class="slider"></span></span></label>
+        <div class="now-setting"><label for="nowFontSize">歌词字号</label><input id="nowFontSize" type="range" min="20" max="40" step="2" /><output id="nowFontValue" for="nowFontSize"></output></div>
+        <div class="now-setting now-offset"><span id="nowOffsetLabel">歌词偏移 0.0 秒</span><button id="nowOffsetMinus" aria-label="歌词提前半秒">−</button><button id="nowOffsetPlus" aria-label="歌词延后半秒">＋</button></div>
+      </div>
+    </div>
+    <span class="grow"></span>
+    <div class="now-window-actions">
+      <button id="nowMini" title="小窗模式" aria-label="小窗模式"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2" y="3" width="16" height="14" rx="2"/><path d="M10 10h6v5h-6z"/></svg></button>
+      <button id="nowMin" title="最小化" aria-label="最小化">−</button><button id="nowMax" title="最大化 / 还原" aria-label="最大化 / 还原">□</button><button id="nowClose" title="关闭窗口" aria-label="关闭窗口">×</button>
+    </div>
+  </header>
+  <div class="now-stage">
+    <div class="now-content">
+      <figure id="nowArtwork"><img id="nowCover" alt="当前歌曲封面" /><figcaption><h2 id="nowTitle"></h2><p id="nowArtist"></p><button id="nowLike" aria-label="加入我喜欢" aria-pressed="false">♡</button></figcaption></figure>
+      <div id="nowLyricsPane"><div id="nowLyrics" aria-label="同步歌词"></div><div class="now-lyrics-footer"><span id="nowLyricsSource"></span><button id="nowRetryLyrics" hidden>重新查找歌词</button></div></div>
+      <div id="nowTextOnly" hidden><h2></h2><p></p></div>
+    </div>
+    <canvas id="nowSpectrum" aria-label="实时音频频谱"></canvas>
+  </div>
+</section>
 <footer class="bar">
-  <img id="bCover" class="cover" />
+  <div class="player-track">
+  <img id="bCover" class="cover" role="button" tabindex="0" aria-label="打开播放界面" title="打开播放界面" />
   <div class="now">
     <div class="t" id="bTitle">选择一首音乐</div>
     <div class="u" id="bUp"></div>
     <button id="playStatus" class="play-status" hidden></button>
   </div>
+    <div class="track-actions">
+    <button id="likeButton" title="加入我喜欢" aria-label="加入我喜欢" aria-pressed="false">♡</button>
+    </div>
+  </div>
   <div class="ctrls">
+    <button id="mode" title="播放模式">🔁</button>
     <button id="prev" title="上一首" aria-label="上一首"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M5 4h2v16H5zm14 0v16L8 12Z"/></svg></button>
     <button id="play" class="primary" title="播放/暂停">▶</button>
     <button id="next" title="下一首" aria-label="下一首"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M17 4h2v16h-2zM5 4l11 8-11 8Z"/></svg></button>
-    <button id="mode" title="播放模式">🔁</button>
-    <button id="qBtn" class="q-btn" title="待播队列">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-        <path d="M4 6h11"></path><path d="M4 12h11"></path><path d="M4 18h7"></path>
-        <path d="M18 10v8"></path><circle cx="17" cy="17" r="2"></circle>
-      </svg>
-      <span id="qBadge" class="q-badge" hidden></span>
-    </button>
   </div>
   <div class="seek">
     <span class="time" id="cur">00:00</span>
@@ -246,14 +284,37 @@
     <span class="time" id="dur">00:00</span>
   </div>
   <div class="right">
+    <button id="barDownload" title="下载当前歌曲" aria-label="下载当前歌曲"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5"/></svg></button>
+    <button id="desktopLyricsButton" title="桌面悬浮歌词" aria-label="桌面悬浮歌词" aria-pressed="false">桌词</button>
+    <button id="qBtn" class="q-btn" title="待播队列">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+        <path d="M4 6h11"></path><path d="M4 12h11"></path><path d="M4 18h7"></path>
+        <path d="M18 10v8"></path><circle cx="17" cy="17" r="2"></circle>
+      </svg>
+      <span id="qBadge" class="q-badge" hidden></span>
+    </button>
+
     <div class="quality-info"><span id="actualQuality" class="actual-quality" hidden></span><button id="quality" class="quality" title="优先选择无损音质" aria-pressed="true"></button></div>
-    <span class="volico"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M11 4 5 9H2v6h3l6 5Zm4 4a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/></svg></span>
-    <input id="vol" type="range" min="0" max="100" value="80" aria-label="音量" />
+    <div class="volume-control"><button id="volumeButton" class="volico" title="音量（滚轮可调节）" aria-label="调整音量" aria-expanded="false" aria-controls="volumePopover"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M11 4 5 9H2v6h3l6 5Zm4 4a6 6 0 0 1 0 8m3-11a10 10 0 0 1 0 14"/></svg></button>
+    <div id="volumePopover" class="volume-popover"><output id="volumeValue" for="vol">80%</output><input id="vol" type="range" min="0" max="100" value="80" aria-label="音量" /></div></div>
   </div>
 </footer>
 <div id="undoBar" class="undo-bar" hidden role="status"><span id="undoText"></span><button id="undoButton">撤销</button><button id="undoClose" title="关闭">×</button></div>
 <div id="completionNotices" class="completion-notices" role="region" aria-label="任务完成提醒"></div>
 
+<dialog id="playlistImport" class="modal-box add-box" aria-labelledby="playlistImportHeading">
+  <h3 id="playlistImportHeading">导入歌单</h3>
+  <label for="playlistSource" class="add-label">歌单、收藏夹链接或曲目清单</label>
+  <textarea id="playlistSource" class="add-input" rows="4" maxlength="500000" placeholder="粘贴歌单或收藏夹链接，多个链接可每行一个；也可每行填写「歌名 - 歌手」"></textarea>
+  <label for="playlistName" class="add-label">新歌单名称</label>
+  <input id="playlistName" class="add-input" maxlength="80" placeholder="默认沿用原歌单名称" />
+  <p id="playlistStatus" class="muted" role="status"></p>
+  <details id="playlistMisses" hidden><summary>查看未匹配曲目</summary><pre></pre></details>
+  <button id="playlistReport" hidden>保存未导入清单（TXT）</button>
+  <button id="playlistNew">添加其他歌单</button>
+  <div class="add-actions"><button id="playlistBackup">打开备份文件…</button><button id="playlistResume" hidden>继续导入</button><span class="grow"></span><button id="playlistCancel">取消</button><button id="playlistHide" hidden>收起</button><button id="playlistAction" class="primary">后台导入</button></div>
+</dialog>
+<dialog id="duplicatesDialog" class="modal-box add-box"><h3>整理重复歌曲</h3><p class="muted">勾选要从当前歌单移除的版本。</p><div id="duplicateRows"></div><div class="add-actions"><button id="duplicateClose">取消</button><button id="duplicateRemove" class="primary">移除所选</button></div></dialog>
 <div id="editModal" class="modal" hidden><form id="editForm" class="modal-box add-box" role="dialog" aria-modal="true" aria-labelledby="editTitle"><h3 id="editTitle">修改名称</h3><label id="editLabel" class="add-label" for="editValue">名称</label><input id="editValue" class="add-input" maxlength="500" required /><div class="add-actions"><button id="editCancel" type="button">取消</button><button class="primary" type="submit">保存</button></div></form></div>
 <div id="songInfoModal" class="modal" hidden>
   <form id="songInfoForm" class="modal-box add-box" role="dialog" aria-modal="true" aria-labelledby="songInfoHeading">
@@ -347,6 +408,20 @@
     </div>
     <div class="set-body">
 
+      <div class="sec" id="appearanceSettings">
+        <div class="sec-title">外观</div>
+        <div class="card">
+          <div class="row-line">
+            <div class="rl-main"><b>主题配色</b><div class="muted">小窗继续随封面取色</div></div>
+            <div class="rl-actions theme-controls">
+              <select id="themeMode" aria-label="外观模式"><option value="system">跟随系统</option><option value="light" selected>浅色</option><option value="dark">深色</option></select>
+              <select id="themeColor" aria-label="主题色"><option value="pink">经典粉</option><option value="blue">雾蓝</option><option value="green">森林绿</option><option value="purple">薰衣草紫</option><option value="cream">奶油暖橙</option></select>
+            </div>
+          </div>
+        </div>
+        <p id="themeStatus" role="status"></p>
+      </div>
+
       <div class="sec" id="playSettings">
         <div class="sec-title">播放控制</div>
         <div class="sec-desc">窗口不在前台时也能控制播放，关闭窗口后继续在托盘后台播放</div>
@@ -377,6 +452,15 @@
             <div class="rl-actions"><button id="quitBtn">退出</button></div>
           </div>
         </div>
+        <details id="customShortcuts"><summary>自定义全局快捷键</summary>
+          <div id="shortcutFields">
+            <label>播放 / 暂停<input data-shortcut="playPause" readonly placeholder="按下组合键" /></label>
+            <label>上一首<input data-shortcut="prev" readonly placeholder="按下组合键" /></label>
+            <label>下一首<input data-shortcut="next" readonly placeholder="按下组合键" /></label>
+            <label>喜欢 / 取消喜欢<input data-shortcut="like" readonly placeholder="按下组合键" /></label>
+            <label>桌面歌词<input data-shortcut="desktopLyrics" readonly placeholder="按下组合键" /></label>
+          </div><p class="muted">点击输入框后按组合键，按退格键清除。</p><p id="shortcutStatus" role="status"></p><button id="saveShortcuts">保存快捷键</button>
+        </details>
       </div>
 
       <div class="sec">
@@ -389,7 +473,7 @@
             </div>
           </div>
           <div class="row-line">
-            <div class="rl-main"><b>音量平衡</b><div class="muted">拉平不同视频 / 不同 P 之间的音量差异，换歌不再忽大忽小</div></div>
+            <div class="rl-main"><b>音量平衡</b><div class="muted">减小不同歌曲之间的音量差异，保留歌曲原有的强弱变化</div></div>
             <div class="rl-actions">
               <label class="switch"><input type="checkbox" id="volumeBalance" /><span class="slider"></span></label>
             </div>
@@ -482,12 +566,17 @@
   </div>
 </div>
 <div id="appUpdateNotice" class="app-update-notice" hidden role="status"><span id="appUpdateNoticeText"></span><button id="appUpdateNoticeOpen">查看更新</button><button id="appUpdateNoticeClose" aria-label="关闭更新提醒">×</button></div>
+<script src="lyrics-model.js"></script>
 <script src="music-search-policy.js"></script>
 <script src="library-model.js"></script>
+<script src="library-features.js"></script>
+<script src="loudness-meter.js"></script>
 <script src="volume-balance.js"></script>
 <script src="workflows.js"></script>
+<script src="playlist-import.js"></script>
 <script src="downloads.js"></script>
 <script src="history.js"></script>
+<script src="now-playing.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

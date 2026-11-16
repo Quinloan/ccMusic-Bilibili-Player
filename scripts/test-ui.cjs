@@ -81,7 +81,7 @@ async function run() {
   try {
     const page = await browser.newPage({ viewport: { width: 1280, height: 820 }, serviceWorkers: 'block' });
     const errors = []; page.on('pageerror', error => errors.push(error.message));
-    const routes = new Map(['/renderer/index.html', '/renderer/style.css', '/renderer/app.js', '/renderer/downloads.js', '/renderer/workflows.js', '/renderer/library-model.js', '/renderer/volume-balance.js', '/renderer/music-search-policy.js', '/renderer/history.js', '/assets/icon.png'].map(url => [url, path.join(root, url)]));
+    const routes = new Map(['/renderer/index.html', '/renderer/style.css', '/renderer/now-playing.css', '/renderer/now-playing.js', '/renderer/themes.js', '/renderer/app.js', '/renderer/downloads.js', '/renderer/workflows.js', '/renderer/playlist-import.js', '/renderer/library-features.js', '/renderer/library-model.js', '/renderer/lyrics-model.js', '/renderer/loudness-meter.js', '/renderer/volume-balance.js', '/renderer/music-search-policy.js', '/renderer/history.js', '/assets/icon.png'].map(url => [url, path.join(root, url)]));
     await page.route('**/*', route => {
       const file = routes.get(new URL(route.request().url()).pathname);
       if (!file) return route.abort();
@@ -98,8 +98,8 @@ async function run() {
     assert.equal(await page.locator('#actualQuality').isHidden(), true);
     assert.equal(await page.locator('#playStatus').isHidden(), true);
     assert.equal(await page.locator('#taskBtn').textContent(), '任务');
-    assert.equal(await page.locator('#downloadsBtn').textContent(), '下载');
-    assert.equal(await page.locator('#downloadsPanel').evaluate(el => el.getBoundingClientRect().height <= 440), true, 'download popover must stay compact');
+    assert.equal(await page.locator('#downloadsBtn').textContent(), '下载记录');
+    assert.equal(await page.locator('#downloadsPanel').evaluate(el => !!el.closest('main')), true, 'download records are a main page');
     assert.equal(await page.locator('#taskCount').isHidden(), true);
     assert.equal(await page.locator('#downloadCount').isHidden(), true);
     assert.equal(await page.evaluate(() => fmtDur('1221:46')), '20:21:46', 'long compilations use hours rather than four-digit minutes');
@@ -137,7 +137,7 @@ async function run() {
     await page.locator('#downloadLimited').click();
     await page.locator('#downloadsPanel:not([hidden])').waitFor();
     assert.equal(await page.locator('#downloadsBtn').getAttribute('data-state'), 'running');
-    assert.equal(await page.locator('#downloadsBtn').textContent(), '下载');
+    assert.equal(await page.locator('#downloadsBtn').textContent(), '下载记录');
     assert.equal(await page.evaluate(() => document.querySelector('#downloadsPanel').getBoundingClientRect().bottom <= document.querySelector('.bar').getBoundingClientRect().top), true, 'download panel must leave playback controls accessible');
     await page.locator('[data-dl-cancel]').click();
     assert.equal(await page.locator('#downloadsBtn').getAttribute('data-state'), 'idle');
@@ -172,7 +172,7 @@ async function run() {
     assert.equal(await page.evaluate(() => S.folders[1].items.length), 1);
     assert.equal(await page.evaluate(() => window.testSplitCalls), 0);
     await page.locator('#folders [data-id="b"]').click();
-    await page.evaluate(() => { loadQueue(folder().items, 0); audio.currentTime = 300; $('#downloadsPanel').hidden = false; });
+    await page.evaluate(() => { loadQueue(folder().items, 0); audio.currentTime = 300; });
     await page.locator('#list .row').first().click({ button: 'right' }); await page.getByText('智能分歌…', { exact: true }).click();
     await page.locator('#reviewModal:not([hidden])').waitFor();
     assert.equal(await page.locator('.completion-notice').count(), 0, 'ready result opens directly without a duplicate reminder');
@@ -227,8 +227,12 @@ async function run() {
     assert.deepEqual(await page.evaluate(() => S.folders.map(f => f.items.length)), [0, 1]);
     await page.locator('#libSelect').click();
     await page.locator('#folders [data-id="b"]').click();
-    const downloadEvent = page.waitForEvent('download');
+    await page.evaluate(() => { window.api.savePlaylistFile = async f => { window.savedFolder = structuredClone(f); return true; }; });
     await page.locator('#libExport').click();
+    assert.equal(await page.evaluate(() => savedFolder.name), '我的欧美合集');
+    await page.locator('#folders [data-id="b"] [data-menu]').click();
+    const downloadEvent = page.waitForEvent('download');
+    await page.getByText('备份全部歌单', { exact: true }).click();
     const download = await downloadEvent;
     const downloaded = await download.path();
     const exported = JSON.parse(fs.readFileSync(downloaded, 'utf8'));
@@ -239,6 +243,71 @@ async function run() {
     await page.waitForFunction(() => S.folders.length === 3);
     await page.locator('#undoButton').click();
     assert.equal(await page.evaluate(() => S.folders.length), 2);
+    // Import shares through the visible dialog; verify cancellation, unmatched rows and persistence.
+    await page.evaluate(() => {
+      window.api.readSharedPlaylist = async () => ({ name: '外部收藏', total: 3,
+        tracks: [{ title: '晴天', artist: '周杰伦', seconds: 269 }, { title: '无匹配', artist: '周杰伦' }, { title: '晴天', artist: '周杰伦', seconds: 269 }] });
+      window.beforeImportSearch = window.api.search; window.beforeImportVideo = window.api.video;
+      window.api.searchPlaylistTrack = async () => [{ bvid: 'BV1TBEK6jEps', title: '周杰伦 - 晴天', duration: '4:29' }];
+      window.api.video = async bvid => ({ bvid, cid: 42, title: '周杰伦 - 晴天', parts: [{ page: 1 }], duration: 269 });
+    });
+    await page.locator('#libImport').click(); await page.getByText('导入歌单…', { exact: true }).click();
+    await page.locator('#playlistSource').fill('https://music.163.com/playlist?id=123');
+    await page.locator('#playlistAction').click();
+    assert.equal(await page.locator('#playlistImport').isVisible(), false);
+    await page.locator('.home-nav').click();
+    await page.locator('#taskBtn').click();
+    await page.locator('#importTaskOpen').click();
+    await page.getByRole('button', { name: '保存 1 首到新歌单' }).waitFor();
+    assert.match(await page.locator('#playlistStatus').textContent(), /1 首未匹配.*1 首重复/);
+    await page.evaluate(() => { window.api.saveImportReport = async (name, report) => { window.reportText = report; return true; }; });
+    await page.locator('#playlistReport').click();
+    assert.match(await page.evaluate(() => reportText), /2\. 无匹配 - 周杰伦（未匹配到音源）/);
+    await page.locator('#playlistAction').click();
+    assert.deepEqual(await page.evaluate(() => [folder().name, testLibrary.folders.at(-1).items[0].cid, folder().items[0].artist]), ['外部收藏', 42, '周杰伦']);
+    await page.locator('#undoButton').click();
+    await page.locator('#libImport').click(); await page.getByText('导入歌单…', { exact: true }).click();
+    await page.locator('#playlistSource').fill('晴天 - 周杰伦\n晴天 - 周杰伦');
+    await page.locator('#playlistAction').click();
+    await page.locator('#taskBtn').click();
+    await page.locator('#importTaskCancel').click();
+    assert.equal(await page.locator('#importTaskCard').isVisible(), false);
+    await page.locator('#tasksClose').click();
+    assert.equal(await page.evaluate(() => S.folders.length), 2);
+    await page.evaluate(() => { window.api.search = window.beforeImportSearch; window.api.video = window.beforeImportVideo; });
+    await page.locator('.home-nav').click();
+    await page.locator('.side #libImport').click(); await page.getByText('导入歌单…', { exact: true }).click();
+    await page.evaluate(() => {
+      window.testImportVisits = [];
+      window.api.readSharedPlaylist = async () => ({ tracks: Array.from({ length: 14 }, (_, i) => ({ title: '曲目' + i, artist: '歌手' })) });
+      window.api.searchPlaylistTrack = async query => {
+        const i = Number(query.match(/\d+/)[0]); testImportVisits.push(i);
+        if (i === 10 && testImportVisits.filter(n => n === 10).length === 1) throw new Error('429');
+        return [{ bvid: 'BV' + String(i).padStart(10, '0'), title: query, duration: 200 }];
+      };
+      window.api.video = async bvid => {
+        const i = Number(bvid.slice(2));
+        if (i === 11) throw new Error('视频已删除');
+        return { bvid, cid: i + 100, title: '曲目' + i + ' 歌手', duration: 200 };
+      };
+    });
+    await page.locator('#playlistSource').fill('https://music.163.com/playlist?id=123');
+    await page.locator('#playlistAction').click();
+    await page.locator('#libImport').click(); await page.getByText('导入歌单…', { exact: true }).click();
+    await page.locator('#playlistHide').click();
+    await page.locator('#taskBtn').click();
+    await page.getByRole('button', { name: '处理暂停任务' }).click();
+    await page.locator('#playlistReport').click();
+    assert.match(await page.evaluate(() => reportText), /11\. 曲目10 - 歌手（尚未处理）/);
+    await page.locator('#playlistResume').click();
+    await page.locator('#taskBtn').click();
+    await page.getByRole('button', { name: '查看结果', exact: true }).click();
+    await page.getByRole('button', { name: '保存 13 首到新歌单' }).click();
+    assert.match(await page.evaluate(() => folder().importReport), /12\. 曲目11 - 歌手（视频已删除）/);
+    assert.doesNotMatch(await page.evaluate(() => folder().importReport), /尚未处理/);
+    assert.deepEqual(await page.evaluate(() => [folder().items.at(-1).title, testImportVisits.length, testImportVisits.filter(n => n === 0).length]), ['曲目13', 15, 1]);
+    await page.locator('#undoButton').click();
+    await page.evaluate(() => { window.api.video = window.beforeImportVideo; });
     await page.locator('#folders [data-id="b"] [data-menu]').click();
     await page.getByText('删除歌单', { exact: true }).click(); await page.locator('#cfOk').click();
     assert.equal(await page.evaluate(() => S.folders.length), 1);
@@ -331,7 +400,7 @@ async function run() {
     await page.locator('#downloadPickerCancel').click();
     await page.setViewportSize({ width: 900, height: 700 });
     assert.equal(await page.evaluate(() => {
-      const elements = ['#backBtn', '#kw', '#taskBtn', '#downloadsBtn', '#avatarBtn', '#wMin'].map(selector => document.querySelector(selector).getBoundingClientRect());
+      const elements = ['#backBtn', '#kw', '#taskBtn', '#avatarBtn', '#wMin'].map(selector => document.querySelector(selector).getBoundingClientRect());
       return elements.every((box, i) => box.right <= innerWidth && (i === 0 || box.left >= elements[i - 1].right));
     }), true, 'download entry must fit minimum 900px window without overlapping search/account/window buttons');
     assert.deepEqual(errors, []);
@@ -343,7 +412,7 @@ async function run() {
       for (let i = 0; i < 16; i++) downloadTasks.set('layout-' + i, { id: 'layout-' + i, title: '很长的下载标题 '.repeat(12), state: 'done', quality: 'FLAC', file: 'D:/' + '很长的文件路径'.repeat(20) + '.flac' });
       showDownloads();
     });
-    assert.equal(await page.locator('#downloadsPanel').evaluate(el => el.getBoundingClientRect().height <= 440), true);
+    assert.equal(await page.locator('#downloadsPanel').evaluate(el => el.getBoundingClientRect().bottom <= document.querySelector('.bar').getBoundingClientRect().top), true);
     assert.equal(await page.locator('#downloadsList').evaluate(el => el.scrollHeight > el.clientHeight), true, 'many downloads scroll inside the popover');
     await page.screenshot({ path: path.join(root, 'validation/ui-downloads-compact.png') });
     await page.evaluate(() => { downloadTasks.clear(); for (const [id, task] of window.savedDownloadTasks) downloadTasks.set(id, task); delete window.savedDownloadTasks; renderDownloads(); });

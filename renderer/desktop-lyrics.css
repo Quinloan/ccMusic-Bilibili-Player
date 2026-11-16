@@ -1,0 +1,23 @@
+* { box-sizing: border-box; }
+html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; }
+body { position: relative; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; border-radius: 14px; padding: 54px 18px 12px; text-align: center; user-select: none; }
+body::before { content: ""; position: absolute; inset: 0; border-radius: inherit; background: rgba(20,20,26,.72); opacity: 0; pointer-events: none; transition: opacity 140ms ease-out; }
+body.controls-visible::before { opacity: 1; }
+.toolbar { position: absolute; z-index: 2; top: 8px; left: 12px; right: 12px; height: 30px; display: flex; align-items: center; justify-content: center; gap: 5px; opacity: 0; transform: translateY(-3px); visibility: hidden; pointer-events: none; color: #eee; font-size: 12px; -webkit-app-region: no-drag; transition: opacity 140ms ease-out, transform 140ms ease-out, visibility 0s linear 140ms; }
+body.controls-visible .toolbar { opacity: 1; transform: translateY(0); visibility: visible; pointer-events: auto; transition-delay: 0s; }
+.drag-handle, #current, #next { -webkit-app-region: drag; }
+.toolbar button { -webkit-app-region: no-drag; border: 0; background: transparent; border-radius: 5px; padding: 3px 6px; color: #fff; font: inherit; cursor: pointer; height: 27px; white-space: nowrap; }
+.toolbar button:hover { background: rgba(255,255,255,.17); }
+.toolbar button:focus-visible { outline: 1px solid #fff; }
+#close { font-size: 23px; margin-left: auto; }
+.colors { display: flex; gap: 3px; -webkit-app-region: no-drag; }
+.colors button { width: 17px; height: 17px; padding: 0; border-radius: 50%; border: 2px solid transparent; }
+.colors button[aria-pressed="true"] { border-color: #6a6a6a; outline: 1px solid #fff; }
+.colors .yellow { background: #ffe27a; }.colors .white { background: #fff; }.colors .mint { background: #93f2cd; }.colors .pink { background: #ffa8d2; }
+#current, #next { position: relative; z-index: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.45; text-shadow: 0 1px 4px #000, 1px 0 2px #000, -1px 0 2px #000; font-weight: 600; }
+#current { font-size: var(--lyric-size, 29px); color: var(--lyric-color, #ffe27a); -webkit-text-stroke: .4px rgba(0,0,0,.6); }
+#next { font-size: calc(var(--lyric-size, 29px) * .72); color: #fff; margin-top: 8px; }
+body.single-line #next { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  body::before, .toolbar { transition: none; }
+}

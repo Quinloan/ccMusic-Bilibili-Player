@@ -8,7 +8,7 @@ async function run() {
   try {
     const page = await browser.newPage({ viewport: { width: 1280, height: 820 }, serviceWorkers: 'block' });
     const errors = []; page.on('pageerror', error => errors.push(error.message));
-    const allowed = ['/renderer/index.html', '/renderer/style.css', '/renderer/app.js', '/renderer/downloads.js', '/renderer/workflows.js', '/renderer/library-model.js', '/renderer/volume-balance.js', '/renderer/music-search-policy.js', '/renderer/history.js', '/assets/icon.png'];
+    const allowed = ['/renderer/index.html', '/renderer/loudness-meter.js', '/renderer/lyrics-model.js', '/renderer/library-features.js', '/renderer/playlist-import.js', '/renderer/themes.js', '/renderer/now-playing.js', '/renderer/now-playing.css', '/renderer/style.css', '/renderer/app.js', '/renderer/downloads.js', '/renderer/workflows.js', '/renderer/library-model.js', '/renderer/volume-balance.js', '/renderer/music-search-policy.js', '/renderer/history.js', '/assets/icon.png'];
     await page.route('**/*', route => {
       const name = new URL(route.request().url()).pathname;
       if (!allowed.includes(name)) return route.abort();

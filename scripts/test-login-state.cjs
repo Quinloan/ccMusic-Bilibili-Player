@@ -4,7 +4,7 @@ const source = fs.readFileSync(require('node:path').join(__dirname, '../main.js'
 const functions = source.slice(source.indexOf('function loadCookies()'), source.indexOf("ipcMain.handle('login:state'"));
 async function run() {
   function fixture(saved = {}, reply) {
-    const c = { cookies: {}, cookiesLoaded: false, reads: 0, net: 0, writes: 0, reply, AbortSignal, API: '',
+    const c = { cookies: {}, cookiesLoaded: false, loginGeneration: 0, loginMaintenance: { check: async () => {} }, reads: 0, net: 0, writes: 0, reply, AbortSignal, API: '',
       readStore() { c.reads++; return { cookies: saved }; }, persistCookies() { c.writes++; },
       async netInit() { c.net++; }, async apiGet() { return typeof c.reply === 'function' ? c.reply() : c.reply; },
       ensureSession() { throw Error('Login state must not wait for WBI/fingerprint'); } };

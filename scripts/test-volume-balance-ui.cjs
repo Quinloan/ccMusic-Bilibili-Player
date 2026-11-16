@@ -25,7 +25,7 @@ function mockAudio() {
     get currentTime() { return Date.now() / 1000; }
     createMediaElementSource() { return new Node(); }
     createGain() { return new Node(); } createDynamicsCompressor() { return new Node(); }
-    createBiquadFilter() { return new Node(); } createChannelSplitter() { return new Node(); }
+    createIIRFilter() { return new Node(); } createChannelSplitter() { return new Node(); }
     createAnalyser() { return new Node(); } createWaveShaper() { return new Node(); }
     async resume() { this.state = 'running'; }
   };
@@ -52,9 +52,11 @@ async function run() {
     const item = { bvid: 'volume', cid: 1, page: 1, title: '音量测试', duration: 300 };
     assert.equal(await play(item), true);
     assert.equal((await read()).native, 1);
-    await page.clock.runFor(5500);
-    let measured = await read(); assert.ok(Math.abs(measured.reference + 20) < 0.01); assert.ok(measured.samples >= 45);
-    assert.ok(Math.abs(measured.gain - 10 ** (6 / 20)) < 0.001, 'measured -20 dB song receives the new +6 dB gain');
+    await page.clock.runFor(18000);
+    const expectedReference = -0.691 + 10 * Math.log10(2 * 0.1 ** 2);
+    const expectedGain = 10 ** ((-12 - expectedReference) / 20);
+    let measured = await read(); assert.ok(Math.abs(measured.reference - expectedReference) < 0.01); assert.ok(measured.samples >= 150);
+    assert.ok(Math.abs(measured.gain - expectedGain) < 0.001, 'K-weighted stereo energy determines gain');
     const reference = measured.reference;
     await page.evaluate(() => { $('#vol').value = '50'; $('#vol').dispatchEvent(new Event('input')); });
     await page.clock.runFor(2000);
@@ -71,7 +73,7 @@ async function run() {
     await page.clock.runFor(1000); assert.equal((await read()).samples, paused, 'seeking cannot pollute learned loudness');
     await page.evaluate(() => { window.testSeeking = false; window.testRms = 0.1; });
     await page.clock.runFor(5000);
-    assert.equal(await page.evaluate(() => JSON.parse(localStorage.volumeReferencesV1).length), 1);
+    assert.equal(await page.evaluate(() => JSON.parse(localStorage.volumeReferencesV2).length), 1);
     // Recovery URL preserves the same song reference, even after metadata edits.
     await play({ ...item, title: '手改标题' }); assert.equal((await read()).reference, reference);
     await page.evaluate(() => { window.testRms = 0; });
@@ -84,8 +86,8 @@ async function run() {
     await play({ ...item, split: true, startSec: 20, endSec: 60 }); assert.equal((await read()).reference, null);
     await page.clock.runFor(4000);
     await play({ ...item, split: true, startSec: 60, endSec: 100 }); assert.equal((await read()).reference, null, 'new split gets its own reference');
-    await play(item); assert.equal((await read()).reference, reference, 'replay uses cached reference before any metering');
-    assert.ok(Math.abs((await read()).gain - 10 ** (6 / 20)) < 0.001, 'cached reference uses the higher target immediately');
+    await play(item); assert.ok(Math.abs((await read()).reference - reference) < 1e-8, 'replay uses cached reference before any metering');
+    assert.ok(Math.abs((await read()).gain - expectedGain) < 0.001, 'cached LUFS reference applies immediately');
     await page.evaluate(() => { $('#volumeBalance').checked = false; $('#volumeBalance').dispatchEvent(new Event('change')); });
     assert.equal(await page.evaluate(() => agcTimer), null);
     assert.equal(await page.evaluate(() => srcNode.connections.has(balanceGraph.master) && !srcNode.connections.has(balanceGraph.gain)), true);
@@ -93,7 +95,7 @@ async function run() {
     assert.equal(await page.evaluate(() => balanceOn()), false, 'explicit opt-out persists');
     await play(item); assert.equal(await page.evaluate(() => agcTimer), null);
     await page.evaluate(() => { $('#volumeBalance').checked = true; $('#volumeBalance').dispatchEvent(new Event('change')); });
-    assert.equal((await read()).reference, reference, 'reference survives restart');
+    assert.ok(Math.abs((await read()).reference - reference) < 1e-8, 'reference survives restart');
     assert.equal((await read()).master, 0, 'user mute survives restart');
     await page.evaluate(() => clearQueue());
     assert.equal(await page.evaluate(() => agcTimer), null);

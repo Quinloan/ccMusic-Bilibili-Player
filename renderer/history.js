@@ -6,7 +6,7 @@ function cleanPlayHistory(rows) {
     let item;
     try { item = LibraryModel.importedFolders({ folders: [{ name: '历史', items: [row.item] }] })[0]?.items[0]; } catch (_) { continue; }
     if (!item) continue;
-    const key = item.bvid + ':' + (item.cid || 0) + ':' + (item.page || 1) + ':' + (item.split ? item.startSec + ':' + item.endSec : '');
+    const key = item.localId ? 'local:' + item.localId : item.bvid + ':' + (item.cid || 0) + ':' + (item.page || 1) + ':' + (item.split ? item.startSec + ':' + item.endSec : '');
     if (seen.has(key)) continue;
     seen.add(key); out.push({ item, playedAt: row.playedAt });
     if (out.length >= 500) break;

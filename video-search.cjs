@@ -137,4 +137,4 @@ function createVideoSearch(fetchPage, now = Date.now) {
     finally { session.inflight.delete(page); }
   };
 }
-module.exports = { cleanText, compact, titleQueries, titleScore, createVideoSearch };
+module.exports = { cleanText, compact, titleQueries, titleScore, createVideoSearch, mapVideo };

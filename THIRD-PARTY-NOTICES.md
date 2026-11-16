@@ -1,5 +1,23 @@
 # Recognition components
 
+## Playback loudness
+
+`renderer/loudness-meter.js` adapts the K-weighting filter parameterization from [libebur128](https://github.com/jiixyj/libebur128/blob/master/ebur128/ebur128.c). Playback uses stereo energy summation, 400 ms blocks with 75% overlap, and -70 LUFS / -10 LU gating. The -12 LUFS playback target is a product choice, not the EBU broadcast target. Streaming measurement covers audio heard so far. The lookahead and sample ceiling protect playback peaks; this is not a certified true-peak meter.
+
+libebur128 license:
+
+Copyright (c) 2011 Jan Kokemüller
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+## Local music metadata
+
+`music-metadata` 12.5.0 (MIT, Copyright Borewit) reads local audio tags, duration and embedded artwork. Its license is included in the dependency package. Source: https://github.com/Borewit/music-metadata . Scanning and tag reading run on the user's device.
+
 ## Artwork colour matching
 
 `cover-palette.cjs` uses the unmodified `@material/material-color-utilities` 0.3.0 package (Copyright Google LLC, Apache-2.0) for deterministic Wu quantization and Score seed selection. The dependency includes its full Apache-2.0 LICENSE. Source: https://github.com/material-foundation/material-color-utilities . It runs locally; no account, external colour service or runtime download is used. ccMusic uses the selected RGB colour directly as an opaque background (option A), pairs text/buttons by contrast, and counts populations against the quantized palette. Random-initialized Celebi/WSMeans refinement is not used. The design comparison script shares the production extraction and direct-colour theme functions; its optional B/C alternatives use HCT and Material light schemes but are not applied in the player. No SPlayer application code was copied.

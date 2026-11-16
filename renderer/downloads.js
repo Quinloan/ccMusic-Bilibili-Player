@@ -23,7 +23,7 @@ async function manageDownloads(action, batchId) {
 let pendingDownload = null, resumeDownload = null, downloadBusy = false, downloadFocus = null;
 let downloadPicker = null;
 let downloadModeResolve = null, downloadModeFocus = null;
-const canSplitDownload = item => !item.split && +item.duration >= SPLIT_MIN_DURATION;
+const canSplitDownload = item => !item.localId && !item.split && +item.duration >= SPLIT_MIN_DURATION;
 function chooseDownloadMode(items) {
   if (downloadModeResolve) return Promise.resolve(null);
   downloadModeFocus = document.activeElement;
@@ -70,7 +70,7 @@ function selectSplitDownloads(task) {
 async function runDownloadRecognition(task) {
   const runId = uniqueId(); task.runId = runId; task.state = 'running'; task.error = '';
   task.downloadPhase = 'identify'; task.progress = { stage: 'identify', done: 0, total: task.result.tracks.length };
-  $('#downloadsPanel').hidden = true; $('#queuePanel').hidden = true; $('#tasksPanel').hidden = false;
+  $('#queuePanel').hidden = true; $('#tasksPanel').hidden = false;
   renderTasks();
   try {
     const tracks = task.result.tracks.map(track => ({ ...track }));
@@ -101,6 +101,7 @@ function applyDownloadRecognition(task, index, track) {
   }
 }
 function openDownloadPicker(items, source = '当前歌单', options = {}) {
+  items = items.filter(item => !item.localId);
   if (!items?.length) return toast('这里还没有可下载的歌曲');
   downloadPicker = { items: items.map(item => ({ ...item })), selected: new Set(options.selectAll && items.length <= 100 ? items.map((_, i) => i) : []), focus: document.activeElement, taskId: options.taskId };
   $('#downloadPickerSource').textContent = `${source} · 共 ${items.length} 首，勾选想下载的歌曲`;
@@ -135,7 +136,7 @@ function renderDownloads() {
   const tasks = [...downloadTasks.values()];
   const active = tasks.some(task => !['done', 'error', 'cancelled'].includes(task.state));
   const failed = tasks.some(task => task.state === 'error' && downloadUnseen.has(task.id));
-  setActivityIndicator('#downloadsBtn', failed ? 'error' : active ? 'running' : downloadUnseen.size ? 'attention' : 'idle', '音频下载');
+  setActivityIndicator('#downloadsBtn', failed ? 'error' : active ? 'running' : downloadUnseen.size ? 'attention' : 'idle', '下载记录');
   $('#downloadsEmpty').hidden = !!tasks.length;
   $('#downloadsTools').hidden = !tasks.length;
   $('#downloadsCancelAll').disabled = downloadManagementBusy || !tasks.some(t => !downloadEnded(t) && t.state !== 'committing');
@@ -174,10 +175,12 @@ function renderDownloads() {
     const commonSource = multiple && task.sharedSource;
     const terminal = ['done', 'error', 'cancelled'].includes(task.state);
     const status = { queued: commonSource ? '等待音源就绪' : '等待下载', preparing: '获取最高音质音轨…', downloading: commonSource ? '等待共用音源下载' : `下载音源 ${task.pct || 0}%`, 'waiting-conversion': '已下载，等待转换', saving: `正在转换为 MP3 ${task.pct || 0}%`, committing: '正在保存文件…', done: '已保存', cancelled: '已取消', error: '下载失败：' + task.error }[task.state] || '准备中';
-    return `<div class="task-card"><strong>${esc(task.title)}</strong><small class="download-status" role="status">${esc(status)}</small>${task.quality ? `<small>${esc(task.quality)}</small>` : ''}
+    return `<div class="task-card download-record"><div class="download-song"><strong>${esc(task.title)}</strong>${task.quality ? `<small>${esc(task.quality)}</small>` : ''}
+      ${task.file ? `<small class="download-path" title="${esc(task.file)}">${esc(task.file)}</small>` : ''}</div>
+      <div class="download-state" data-state="${esc(task.state)}"><small class="download-status" role="status">${esc(status)}</small>
       ${task.state === 'downloading' && !commonSource ? `<progress max="100" value="${Number(task.pct) || 0}" aria-label="下载进度"></progress>` : ''}
       ${task.state === 'saving' ? `<progress max="100" value="${Number(task.pct) || 0}" aria-label="歌曲转换进度"></progress>` : ''}
-      ${task.file ? `<small class="download-path" title="${esc(task.file)}">${esc(task.file)}</small>` : ''}
+      </div>
       <div class="task-actions">${!terminal && task.state !== 'committing' ? `<button data-dl-cancel="${task.id}">取消</button>` : ''}
       ${task.state === 'done' ? `<button data-dl-reveal="${task.id}">打开文件位置</button>` : ''}
       ${['error', 'cancelled'].includes(task.state) ? `<button data-dl-retry="${task.id}">重试</button>` : ''}
@@ -187,8 +190,7 @@ function renderDownloads() {
 }
 function showDownloads() {
   $('#queuePanel').hidden = true; $('#tasksPanel').hidden = true;
-  $('#downloadsPanel').hidden = false;
-  downloadUnseen.clear(); renderDownloads();
+  showView('downloads');
 }
 function closeDownloadPrompt() {
   $('#downloadLoginModal').hidden = true; pendingDownload = null;
@@ -218,6 +220,8 @@ async function performDownload(operation, allowLimited = false) {
 }
 async function requestDownloads(items, options = {}) {
   if (!items.length) return toast('先选择曲目');
+  items = items.filter(item => !item.localId);
+  if (!items.length) return toast('所选歌曲已在本地，可通过「位置」打开文件夹');
   if (items.length > 100) return toast('每批最多下载 100 首，请分批选择');
   if (!options.whole && items.some(canSplitDownload)) {
     const mode = await chooseDownloadMode(items);
@@ -293,8 +297,9 @@ function initDownloads() {
   B.downloadList().then(tasks => { for (const task of Array.isArray(tasks) ? tasks : []) if (!downloadDismissedIds.has(task.id) && !downloadTasks.has(task.id)) downloadTasks.set(task.id, task); renderDownloads(); }).catch(() => {});
   $('#downloadsCancelAll').onclick = () => manageDownloads('cancel');
   $('#downloadsClear').onclick = () => manageDownloads('clear');
-  $('#downloadsBtn').onclick = () => { const visible = !$('#downloadsPanel').hidden; showDownloads(); $('#downloadsPanel').hidden = visible; };
-  $('#downloadsClose').onclick = () => { $('#downloadsPanel').hidden = true; };
+  $('#downloadsBtn').onclick = showDownloads;
+  $('#downloadsClose').onclick = () => { if (viewStack.length) goBack(); else showView('home'); };
+  $('#barDownload').onclick = () => $('#downloadCurrent').click();
   $('#downloadCurrent').onclick = () => { const item = playback.current?.item || S.queue[S.qcur]; if (item) requestDownloads([item]); else toast('请先播放一首歌'); };
   $('#libDownload').onclick = () => requestDownloads(folder().items.filter(item => librarySelection.has(itemKey(item))));
   $('#downloadsList').onclick = async event => {

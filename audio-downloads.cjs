@@ -93,7 +93,7 @@ function createDownloader({ getPlayurl, resolveItem, request, headers, executabl
   // Kept independently of visible records: dismissed/cancelled jobs must still
   // finish cleanup before idle/shutdown returns.
   const unfinished = new Set();
-  const view = job => ({ id: job.id, title: job.item.title, state: job.state, pct: job.pct || 0, quality: job.quality || '', error: job.error || '', file: job.file || '',
+  const view = job => ({ id: job.id, title: job.item.title, state: job.state, pct: job.pct || 0, quality: job.quality || '', error: job.error || '', file: job.file || '', item: job.state === 'done' ? job.item : undefined,
     batchId: job.batch.id, batchRevision: job.batch.revision,
     sharedSource: job.batch.cache && job.batch.members.some(other => other !== job && other.item.bvid === job.item.bvid &&
       (+other.item.page || 1) === (+job.item.page || 1) && (!other.item.cid || !job.item.cid || +other.item.cid === +job.item.cid)),

@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'">
+  <link rel="stylesheet" href="desktop-lyrics.css">
+  <title>ccMusic 桌面歌词</title>
+</head>
+<body>
+  <div class="toolbar">
+    <span class="drag-handle" title="拖动调整位置">⠿</span>
+    <button id="smaller" title="缩小字号" aria-label="缩小字号">A−</button><span id="fontSize">29</span><button id="larger" title="放大字号" aria-label="放大字号">A＋</button>
+    <div class="colors" aria-label="歌词颜色">
+      <button data-color="#ffe27a" class="yellow" aria-label="黄色歌词"></button>
+      <button data-color="#ffffff" class="white" aria-label="白色歌词"></button>
+      <button data-color="#93f2cd" class="mint" aria-label="绿色歌词"></button>
+      <button data-color="#ffa8d2" class="pink" aria-label="粉色歌词"></button>
+    </div>
+    <button id="lines" title="切换单行或双行">双行</button>
+    <button id="earlier" title="歌词提前半秒">−0.5s</button><span id="offset">0.0s</span><button id="later" title="歌词延后半秒">＋0.5s</button>
+    <button id="close" aria-label="关闭桌面歌词" title="关闭桌面歌词">×</button>
+  </div>
+  <div id="current">等待播放</div><div id="next"></div>
+  <script src="desktop-lyrics.js"></script>
+</body>
+</html>

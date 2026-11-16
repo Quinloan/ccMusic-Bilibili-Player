@@ -4,12 +4,12 @@ async function run() {
   const source = fs.readFileSync(path.join(__dirname, '..', 'renderer/app.js'), 'utf8');
   const label = { textContent: '', classList: { toggle() {} } }, requests = [], played = [], listeners = new Map(), timers = new Map(); let timerId = 0;
   const context = { $: () => label, clearTimeout: id => timers.delete(id), setTimeout: fn => { timers.set(++timerId, fn); return timerId; }, console, curSplitStart: null, curSplitEnd: null, splitAdvancing: false, fmt: n => String(n),
-    S: { queue: [], qcur: -1 }, ensureCid: async () => 1, pickTrack: p => p.tracks[0],
+    S: { queue: [], qcur: -1 }, refreshMiniRanges() {}, ensureCid: async () => 1, pickTrack: p => p.tracks[0],
     B: { playurl: (bvid, _cid, refresh) => new Promise(resolve => requests.push({ bvid, refresh, resolve })), setTrayTip() {} },
     audio: { src: '', readyState: 1, duration: 3167, currentTime: 0, paused: false, seeking: false, pause() {},
       removeEventListener(name, fn) { if (listeners.get(name) === fn) listeners.delete(name); },
       addEventListener(name, fn) { listeners.set(name, fn); }, play: async function () { played.push(this.src); } },
-    setPlayIcon() {}, setSongCover() {}, requestSongCover() {}, mergeAdjacentIdentified() {}, toast() {}, applyBalanceRouting() {}, startAgc() {}, syncQualityBtn() {}, renderList() {}, renderQueue() {}, ac: null };
+    setPlayIcon() {}, setSongCover() {}, requestSongCover() {}, mergeAdjacentIdentified() {}, toast() {}, applyBalanceRouting() {}, startAgc() {}, syncQualityBtn() {}, renderList() {}, renderQueue() {}, ac: null, desktopLyricsEnabled: false };
   vm.createContext(context);
   vm.runInContext(source.slice(source.indexOf('const songArtist ='), source.indexOf('const save =')), context);
   vm.runInContext(source.slice(source.indexOf('const playback ='), source.indexOf('// 上一首 / 下一首')) + '\nthis.playerState = playback;', context);

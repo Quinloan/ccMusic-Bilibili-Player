@@ -12,7 +12,7 @@ async function run() {
     B: { splitAnalyze: async () => ({ tracks: [{ start: 0, end: 300, title: '甲' }, { start: 300, end: 900, title: '乙' }], named: 2 }) },
     LibraryModel: require('../renderer/library-model.js'), setSongCover() {}, requestSongCover() {},
     toast: () => {}, save: () => {}, renderFolders: () => {}, renderList: () => {}, renderQueue: () => {},
-    folder: () => f, audio: { currentTime: 420, removeEventListener() {} }, $: () => label, curSplitStart: null, curSplitEnd: null,
+    folder: () => f, audio: { currentTime: 420, removeEventListener() {} }, playbackTime: () => context.audio.currentTime, $: () => label, curSplitStart: null, curSplitEnd: null,
     uniqueId: () => 'batch', offerUndo() {}, syncCurrentSegment() {}, runSplitTask: async () => {}, setPlayIcon() {}, clearTimeout, setTimeout };
   vm.runInNewContext(key + split + '\nthis.keyOf = itemKey;', context);
   await context.maybeSplit(f, item);
@@ -40,6 +40,7 @@ async function run() {
   context.syncQualityBtn = () => {};
   context.mergeAdjacentIdentified = () => {};
   context.ac = null;
+  context.desktopLyricsEnabled = false;
   Object.defineProperty(context.audio, 'currentTime', { configurable: true, get: () => 420, set: t => events.push('seek:' + t) });
   context.audio.readyState = 1;
   context.audio.play = async () => events.push('play');

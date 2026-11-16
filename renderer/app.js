@@ -22,6 +22,8 @@ const S = {
   hasMore: false,
   hot: [],     // 首页：B 站音乐区热门
   history: [],
+  positions: {},
+  lastPlayed: null,
 };
 
 const esc = (s) =>
@@ -41,10 +43,13 @@ const fmtDur = (d) => {
 const fmtPlay = (n) => (n >= 10000 ? (n / 10000).toFixed(1) + ' 万' : String(n ?? 0));
 const folder = () => S.folders.find((f) => f.id === S.active);
 const songArtist = item => Object.hasOwn(item, 'artist') ? String(item.artist || '') : item.up || item.author || '';
-const save = () =>
-  B.setLibrary({
+const save = () => {
+  if (typeof captureListeningPosition === 'function') captureListeningPosition();
+  return B.setLibrary({
     folders: S.folders, active: S.active, queue: S.queue, qcur: S.qcur, history: S.history,
+    positions: S.positions, lastPlayed: S.lastPlayed,
   });
+};
 
 let toastTimer;
 function toast(msg) {
@@ -59,16 +64,17 @@ function toast(msg) {
   toastTimer = setTimeout(() => el.classList.remove('show'), 2400);
 }
 
-const VIEWS = ['home', 'library', 'search', 'history', 'diag', 'about'];
+const VIEWS = ['home', 'library', 'search', 'history', 'downloads', 'diag', 'about'];
 const viewStack = []; // 视图历史，返回按钮用
 function showView(v, opts) {
+  if (typeof closeNowPlaying === 'function') closeNowPlaying(false);
   if (!VIEWS.includes(v)) v = 'library';
   if (S.view && S.view !== v && !(opts && opts.noHistory)) {
     viewStack.push(S.view);
     if (viewStack.length > 30) viewStack.shift();
   }
   S.view = v;
-  VIEWS.forEach((id) => { const el = $('#view-' + id); if (el) el.hidden = id !== v; });
+  VIEWS.forEach((id) => { const el = $(id === 'downloads' ? '#downloadsPanel' : '#view-' + id); if (el) el.hidden = id !== v; });
   $$('.nav-item').forEach((n) => n.classList.toggle('on', n.dataset.view === v));
   $$('#folders .folder').forEach(n => n.classList.toggle('on', v === 'library' && n.dataset.id === S.active));
   const back = $('#backBtn');
@@ -77,6 +83,8 @@ function showView(v, opts) {
   if (v === 'search') scheduleSearchMore();
   if (v === 'home') scheduleHomeMore();
   if (v === 'history') renderPlayHistory();
+  if (v === 'downloads') { downloadUnseen.clear(); renderDownloads(); }
+  if (typeof syncLibraryTools === 'function') syncLibraryTools();
 }
 // 返回上一视图；没有历史时提示
 function goBack() {
@@ -121,6 +129,8 @@ async function init() {
   mark('init 开始');
   const lib = await B.getLibrary();
   S.history = cleanPlayHistory(lib?.history);
+  S.positions = Object.fromEntries(Object.entries(lib?.positions || {}).filter(([key, value]) => key.length < 300 && Number.isFinite(value) && value >= 0).slice(-500));
+  S.lastPlayed = lib?.lastPlayed || null;
   mark('收藏数据已返回');
   if (lib?.folders?.length) {
     S.folders = lib.folders;
@@ -131,9 +141,10 @@ async function init() {
     save();
   }
   // 待播队列：上次退出时的队列，恢复但不自动播放
-  S.queue = Array.isArray(lib?.queue) ? lib.queue.filter((x) => x && x.bvid) : [];
+  S.queue = Array.isArray(lib?.queue) ? lib.queue.filter((x) => x && (x.bvid || x.localId)) : [];
   S.qcur = Number.isInteger(lib?.qcur) && lib.qcur < S.queue.length ? lib.qcur : -1;
   restorePendingTasks();
+  restoreListeningPosition();
   const savedVolume = Number(localStorage.savedVolume ?? 0.8);
   setUserVolume(Number.isFinite(savedVolume) ? savedVolume : 0.8, false);
   $('#vol').value = posFromVol(userVolume);
@@ -168,18 +179,18 @@ function scheduleStartupLoginReminder() {
   startupLoginTimer = setTimeout(() => {
     startupLoginTimer = null;
     if (!startupLoginEligible || !startupLoginPending || accountState.logged || accountState.stale || localStorage.startupLoginReminder === '0') return;
-    if (document.querySelector('.modal:not([hidden])')) return;
+    if (document.querySelector('.modal:not([hidden]), dialog[open]')) return;
     startupLoginEligible = false; startupLoginPending = false;
     startupLoginFocus = document.activeElement;
     $('#accountMenu').hidden = true;
-    for (const selector of ['#tasksPanel', '#downloadsPanel', '#queuePanel']) $(selector).hidden = true;
+    for (const selector of ['#tasksPanel', '#queuePanel']) $(selector).hidden = true;
     $('#startupLoginModal').hidden = false;
     $('#startupLoginNow').focus();
   }, 300);
 }
 function initStartupLoginReminder() {
   const observer = new MutationObserver(scheduleStartupLoginReminder);
-  for (const modal of document.querySelectorAll('.modal')) observer.observe(modal, { attributes: true, attributeFilter: ['hidden'] });
+  for (const modal of document.querySelectorAll('.modal, dialog')) observer.observe(modal, { attributes: true, attributeFilter: ['hidden', 'open'] });
   $('#startupLoginClose').onclick = () => dismissStartupLoginReminder();
   $('#startupLoginNever').onclick = () => dismissStartupLoginReminder(true);
   $('#startupLoginNow').onclick = () => openLogin();
@@ -261,6 +272,7 @@ function openAccountMenu() {
     amItem(AM_ICONS.diag, '诊断', 'diag'),
     amItem(AM_ICONS.about, '关于', 'about'),
     '<div class="am-sep"></div>',
+    ...(accountState.logged && accountState.st?.renewalRequired ? [amItem(AM_ICONS.login, '重新扫码以保持登录', 'login')] : []),
     accountState.logged
       ? amItem(AM_ICONS.logout, '退出登录', 'logout', true)
       : amItem(AM_ICONS.login, '扫码登录', 'login'),
@@ -357,7 +369,7 @@ function applySplitResult(f, item, r, previous = null) {
     if (queueIndex === oldCurrent) {
       newCurrent = nextQueue.length;
       if (replacement) {
-        const part = Math.max(0, tracks.findIndex(t => audio.currentTime >= t.startSec && audio.currentTime < t.endSec));
+        const part = Math.max(0, tracks.findIndex(t => playbackTime() >= t.startSec && playbackTime() < t.endSec));
         newCurrent = replaceStart + part;
         curSplitStart = tracks[part].startSec; curSplitEnd = tracks[part].endSec;
         $('#bTitle').textContent = tracks[part].title;
@@ -520,6 +532,7 @@ $('#confirmModal').onclick = (e) => {
 // ---------------------------------------------------------------- 渲染
 function renderFolders() {
   $('#folders').innerHTML = S.folders
+    .filter(f => !f.kind)
     .map(
       (f) => `<div class="folder ${S.view === 'library' && f.id === S.active ? 'on' : ''}" data-id="${f.id}">
         <span class="name">${esc(f.name)}</span>
@@ -537,6 +550,10 @@ function renderFolders() {
         if (f) showCtxMenu(e.clientX, e.clientY, [
           { label: '选择歌曲下载…', action: () => openDownloadPicker(f.items, f.name) },
           { label: '重命名歌单', action: () => renameFolder(f) },
+          { label: '保存歌单到文件…', action: () => savePlaylistFile(f) },
+          ...(f.sourceUrl ? [{ label: '同步收藏夹新增内容', action: () => syncSourceFolder(f) }] : []),
+          ...(f.importReport ? [{ label: '保存未导入清单（TXT）', action: () => saveImportReport(f.name, f.importReport) }] : []),
+          { label: '备份全部歌单', action: downloadLibrary },
           { label: '删除歌单', action: () => deleteFolder(f) },
         ]);
         return;
@@ -546,6 +563,7 @@ function renderFolders() {
       save(); renderFolders(); renderList(); showView('library');
     };
   });
+  syncLibraryTools();
 }
 
 function rowHtml(it, i, extra) {
@@ -561,7 +579,7 @@ function rowHtml(it, i, extra) {
     </div>
     <div class="acts">
       <button data-play="${i}">播放</button>
-      <button data-dl="${i}">下载</button>
+      <button data-dl="${i}">${it.localId ? '位置' : '下载'}</button>
       <button data-rm="${i}">移除</button>
     </div></div>`;
 }
@@ -617,6 +635,7 @@ function renderList() {
   $('#playAll').disabled = !f.items.length;
   $('#libTitle').textContent = f.name;
   $('#libCount').textContent = `${f.items.length} 首`;
+  syncLibraryTools();
   if (!f.items.length) {
     $('#list').innerHTML = '<div class="empty">这个歌单还是空的，去上方搜索框找几首加进来</div>';
     return;
@@ -664,7 +683,12 @@ function renderList() {
       const button = e.target.closest('button');
       const action = button?.dataset || {};
       const gp = action.gplay, grm = action.grm;
-      if (action.dl !== undefined) { await requestDownloads([f.items[+action.dl]]); return; }
+      if (action.dl !== undefined) {
+        const item = f.items[+action.dl];
+        if (item.localId) await B.localLibraryReveal(item);
+        else await requestDownloads([item]);
+        return;
+      }
       if (action.gdl !== undefined) { openDownloadPicker(f.items.slice(+action.gdl, +action.gdl + +el.dataset.count), f.items[+action.gdl].vtitle || f.name); return; }
       if (librarySelecting && !isGroup && action.play === undefined && action.rm === undefined) {
         const key = itemKey(f.items[i]);
@@ -739,11 +763,23 @@ function renderList() {
         return;
       }
       const it = f.items[i];
+      if (it.localId) {
+        showCtxMenu(e.clientX, e.clientY, [
+          { label: '播放', action: () => playIndex(i) },
+          { label: '下一首播放', action: () => addNext([it]) },
+          { label: '加入其他歌单…', action: () => saveItemsToFolder([it], { allowSplit: false }) },
+          { label: '编辑歌曲信息…', action: () => editSongInfo(it) },
+          { label: '打开文件位置', action: () => B.localLibraryReveal(it) },
+          { label: '从歌单移除', action: () => rmItems(i, 1) },
+        ]);
+        return;
+      }
       showCtxMenu(e.clientX, e.clientY, [
         { label: '播放', action: () => playIndex(i) },
         { label: '下载（最高可用音质）', action: () => requestDownloads([it]) },
         { label: '下一首播放', action: () => addNext([it]) },
         { label: '编辑歌曲信息…', action: () => editSongInfo(it) },
+        { label: '关联已下载的本地单曲…', action: () => linkLocalAudio(it) },
         { label: '解析歌曲信息', action: () => parseSongMetadata([it]) },
         ...(it.split ? [{ label: '重新智能分歌…', action: () => resplitVideo(f, it) }] : []),
         ...(it.split ? [{ label: '恢复整段…', action: () => restoreWholeVideo(f, it) }] : []),
@@ -761,6 +797,7 @@ function renderList() {
       ]);
     };
   });
+  bindSongDragging($('#list'), f.items, () => { renderFolders(); renderList(); });
 }
 
 function renderResults(append = false) {
@@ -997,7 +1034,7 @@ let pmMeta = null;      // 当前视频信息（含 parts / season）
 let pmMode = 'parts';   // parts | season
 let pmWantPlay = false; // 加入后是否立即播放
 
-const sourceKey = (it) => it.bvid + ':' + (+it.page || 1);
+const sourceKey = (it) => it.localId ? 'local:' + it.localId : it.bvid + ':' + (+it.page || 1);
 const itemKey = (it) => sourceKey(it)
   + (it.split ? ':' + it.startSec + ':' + it.endSec : '');
 
@@ -1166,7 +1203,7 @@ let addChoiceResolve = null;
 let addChoiceCanSplit = false;
 let addChoiceFocus = null;
 function canSplitItem(item) {
-  return !item.split && item.duration >= SPLIT_MIN_DURATION && (+item.page || 1) === 1;
+  return !item.localId && !item.split && item.duration >= SPLIT_MIN_DURATION && (+item.page || 1) === 1;
 }
 function chooseAddOptions(items, opts = {}) {
   if (addChoiceResolve) closeAddDialog(null);
@@ -1174,9 +1211,10 @@ function chooseAddOptions(items, opts = {}) {
   addChoiceCanSplit = opts.allowSplit !== false && items.some(canSplitItem);
   $('#addTitle').textContent = opts.confirmText || '加入歌单';
   $('#addSummary').textContent = items.length === 1 ? items[0].title : `已选 ${items.length} 首 · ${fmtTotal(items.reduce((sum, it) => sum + (+it.duration || 0), 0))}`;
-  $('#addFolder').innerHTML = S.folders.map(f => `<option value="${esc(f.id)}">${esc(f.name)}（${f.items.length} 首）</option>`).join('')
+  const destinations = S.folders.filter(f => f.kind !== 'local');
+  $('#addFolder').innerHTML = destinations.map(f => `<option value="${esc(f.id)}">${esc(f.name)}（${f.items.length} 首）</option>`).join('')
     + '<option value="__new__">＋ 新建歌单…</option>';
-  $('#addFolder').value = S.folders.some(f => f.id === S.active) ? S.active : '__new__';
+  $('#addFolder').value = destinations.some(f => f.id === S.active) ? S.active : destinations[0]?.id || '__new__';
   $('#addNewName').value = '';
   $('#addNewWrap').hidden = $('#addFolder').value !== '__new__';
   $('#addSplitOptions').hidden = !addChoiceCanSplit;
@@ -1277,7 +1315,7 @@ async function playSearchItem(r) {
     await playQueueAt(0);
     renderList();
   } catch (e) {
-    toast('播放失败：' + e.message);
+    toast('播放失败：' + String(e.message || e).replace(/^Error invoking remote method 'bili:playurl': (?:Error: )?/, ''));
   }
 }
 
@@ -1322,27 +1360,33 @@ let agcTimer = null;
 let balanceGraph = null, balanceController = null, balanceKey = '', userVolume = 0.8;
 const volumeReferences = new Map();
 try {
-  const saved = JSON.parse(localStorage.volumeReferencesV1 || '[]');
+  localStorage.removeItem('volumeReferencesV1');
+  const saved = JSON.parse(localStorage.volumeReferencesV2 || '[]');
   if (Array.isArray(saved)) for (const entry of saved.slice(-100)) {
-    if (Array.isArray(entry) && typeof entry[0] === 'string' && entry[0].length < 300 && Number.isFinite(entry[1]) && entry[1] >= -50 && entry[1] <= 6) volumeReferences.set(entry[0], entry[1]);
+    if (Array.isArray(entry) && typeof entry[0] === 'string' && entry[0].length < 300 && Number.isFinite(entry[1]) && entry[1] >= -70 && entry[1] <= 10) volumeReferences.set(entry[0], entry[1]);
   }
 } catch (_) {}
 let volumeCacheTimer = null;
 function rememberVolumeReference() {
-  if (!balanceKey || balanceController?.samples < 30 || !Number.isFinite(balanceController?.reference)) return;
-  if (volumeReferences.has(balanceKey) && Math.abs(volumeReferences.get(balanceKey) - balanceController.reference) < 0.1) return;
-  volumeReferences.delete(balanceKey); volumeReferences.set(balanceKey, balanceController.reference);
+  const reference = balanceController?.gainReference;
+  if (!balanceKey || balanceController?.samples < 150 || !Number.isFinite(reference)) return;
+  if (volumeReferences.has(balanceKey) && Math.abs(volumeReferences.get(balanceKey) - reference) < 0.1) return;
+  volumeReferences.delete(balanceKey); volumeReferences.set(balanceKey, reference);
   while (volumeReferences.size > 100) volumeReferences.delete(volumeReferences.keys().next().value);
   if (volumeCacheTimer !== null) return;
   volumeCacheTimer = setTimeout(() => {
     volumeCacheTimer = null;
-    try { localStorage.volumeReferencesV1 = JSON.stringify([...volumeReferences]); } catch (_) {}
+    try { localStorage.volumeReferencesV2 = JSON.stringify([...volumeReferences]); } catch (_) {}
   }, 1500);
 }
 function setUserVolume(value, persist = true) {
   userVolume = Math.max(0, Math.min(1, Number(value) || 0));
   if (balanceGraph) { audio.volume = 1; balanceGraph.setVolume(userVolume); }
   else audio.volume = userVolume;
+  $('#vol').value = posFromVol(userVolume);
+  $('#volumeValue').textContent = Math.round(userVolume * 100) + '%';
+  $('#vol').setAttribute('aria-valuetext', Math.round(userVolume * 100) + '%');
+  $('#volumeButton').setAttribute('aria-label', '音量 ' + Math.round(userVolume * 100) + '%，滚轮可调节');
   if (persist) try { localStorage.savedVolume = String(userVolume); } catch (_) {}
 }
 
@@ -1366,6 +1410,7 @@ function applyBalanceRouting() {
 function startAgc(item = playback.current?.item, track = playback.current?.track) {
   clearInterval(agcTimer);
   agcTimer = null;
+  balanceGraph?.resetMeter(false);
   if (!balanceOn() || !balanceGraph) return;
   const key = item ? itemKey(item) + '|' + (item.cid || 0) + '|' + (track?.id || '') : '';
   rememberVolumeReference();
@@ -1373,11 +1418,15 @@ function startAgc(item = playback.current?.item, track = playback.current?.track
     balanceKey = key; balanceController = VolumeBalance.createController(volumeReferences.get(key));
   }
   balanceGraph.setDb(balanceController.db, true);
-  let meterReadyAt = ac.currentTime + 0.25;
+  let collecting = false;
   agcTimer = setInterval(() => {
-    if (audio.seeking) meterReadyAt = ac.currentTime + 0.25;
-    if (audio.paused || audio.seeking || audio.readyState < 3 || ac.state !== 'running' || ac.currentTime < meterReadyAt) return;
-    balanceGraph.setDb(balanceController.push(balanceGraph.measure()));
+    if (audio.paused || audio.seeking || audio.readyState < 3 || ac.state !== 'running') {
+      if (collecting) { balanceGraph.resetMeter(false); collecting = false; }
+      return;
+    }
+    if (!collecting) { balanceGraph.resetMeter(); collecting = true; return; }
+    for (const level of balanceGraph.takeMeasurements()) balanceController.push(level);
+    balanceGraph.setDb(balanceController.db);
     rememberVolumeReference();
   }, 100);
 }
@@ -1420,7 +1469,9 @@ function renderQueue() {
         event.preventDefault();
         const item = S.queue[+el.dataset.i];
         if (item) showCtxMenu(event.clientX, event.clientY, [{ label: '编辑歌曲信息…', action: () => editSongInfo(item) },
-          { label: '解析歌曲信息', action: () => parseSongMetadata([item]) }]);
+          ...(item.localId ? [{ label: '在文件夹中显示', action: () => B.localLibraryReveal(item) }] : [
+            { label: '关联已下载的本地单曲…', action: () => linkLocalAudio(item) },
+            { label: '解析歌曲信息', action: () => parseSongMetadata([item]) }])]);
       };
       el.onclick = (e) => {
         if (e.target.dataset.x !== undefined) {
@@ -1439,6 +1490,7 @@ function renderQueue() {
       : '';
   }
   syncQueueBtn();
+  bindSongDragging(box, S.queue, renderQueue);
 }
 
 // 用一份曲目替换整个待播队列，并从 startIdx 开始（不自动播放）
@@ -1475,7 +1527,9 @@ function removeFromQueue(i) {
 }
 
 function clearQueue() {
-  clearInterval(agcTimer); agcTimer = null; rememberVolumeReference();
+  if (typeof captureListeningPosition === 'function') captureListeningPosition();
+  S.lastPlayed = null;
+  clearInterval(agcTimer); agcTimer = null; balanceGraph?.resetMeter(false); rememberVolumeReference();
   playback.sequence++; clearTimeout(playback.stallTimer);
   playback.current = null; playback.requested = null;
   playback.seekTarget = null; playback.seekRevision++;
@@ -1484,7 +1538,9 @@ function clearQueue() {
   audio.pause(); audio.removeAttribute('src'); audio.load();
   curSplitStart = null; curSplitEnd = null;
   $('#bTitle').textContent = '选择一首音乐'; $('#bUp').textContent = '';
-  $('#cur').textContent = '00:00'; $('#dur').textContent = '00:00'; $('#seek').value = '0';
+  lyricsTicket++; lyricsRows = []; lyricsLoadedKey = ''; lyricsLoadPromise = null; lyricsMessage = '等待播放'; publishDesktopLyrics('等待播放');
+  if (typeof closeNowPlaying === 'function') closeNowPlaying(false);
+  $('#cur').textContent = '00:00'; $('#dur').textContent = '00:00'; $('#seek').value = '0'; refreshMiniRanges();
   curKbps = 0; curFormat = ''; syncQualityBtn(); setPlaybackStatus('');
   S.queue = [];
   S.qcur = -1;
@@ -1506,7 +1562,8 @@ async function playQueueAt(i) {
   const idx = f ? f.items.findIndex((x) => itemKey(x) === itemKey(it)) : -1;
   S.qcur = i;
   const played = await playTrack(it, idx);
-  if (!played || !S.queue[i] || itemKey(S.queue[i]) !== itemKey(it)) return;
+  if (!played || !S.queue.includes(it)) return;
+  S.qcur = S.queue.indexOf(it);
   save();
   renderQueue();
 }
@@ -1535,6 +1592,7 @@ let curFormat = '';
 
 // 老数据修复判定：缺 cid、封面还是分P黑帧（storyff）、或标题带「001.」序号前缀
 function needsMetaFix(it) {
+  if (it.localId) return false;
   return !it.cid
     || /storyff/.test(it.cover || '')
     || /^\s*\d{1,4}\s*[.\-—_、·]/.test(it.title || '');
@@ -1588,6 +1646,13 @@ let curSplitStart = null;
 let curSplitEnd = null;
 const playback = { sequence: 0, current: null, seekListener: null, recovering: false, lastPosition: 0, stallTimer: null,
   seekTarget: null, seekRevision: 0 };
+function playbackTime() {
+  return audio.currentTime + (playback.current?.track.local && playback.current.item.split ? playback.current.item.startSec : 0);
+}
+function setPlaybackTime(value) {
+  const offset = playback.current?.track.local && playback.current.item.split ? playback.current.item.startSec : 0;
+  audio.currentTime = Math.max(0, value - offset);
+}
 function setPlaybackStatus(text, failed = false) {
   const status = $('#playStatus');
   if (status) {
@@ -1629,27 +1694,35 @@ function seekPlayback(position) {
   if (playback.current?.ticket === playback.sequence && audio.readyState >= 1) {
     if (playback.seekListener) audio.removeEventListener('loadedmetadata', playback.seekListener);
     playback.seekListener = null;
-    try { audio.currentTime = target; } catch (_) {}
+    try { setPlaybackTime(target); } catch (_) {}
     scheduleStallRecovery();
   }
 }
 
 async function playTrack(it, idx, options = {}) {
+  if (playback.current && typeof captureListeningPosition === 'function') { captureListeningPosition(); save(); }
   const ticket = ++playback.sequence;
   clearTimeout(playback.stallTimer);
   if (playback.seekListener) audio.removeEventListener('loadedmetadata', playback.seekListener);
   playback.seekListener = null;
   playback.current = null;
-  const request = { item: it, idx, position: options.position ?? it.startSec ?? 0, userSeek: false };
+  const request = { item: it, idx, position: options.position ?? (!options.preview && typeof rememberedPosition === 'function' ? rememberedPosition(it) : it.startSec ?? 0), userSeek: false };
   playback.requested = request;
   playback.lastPosition = request.position;
   playback.seekTarget = null; playback.seekRevision++;
   if (audio.pause) audio.pause();
   setPlaybackStatus(options.recovery ? '正在恢复播放…' : '正在加载…');
   try {
-    await ensureCid(it);
+    const local = options.skipLocal ? null : await B.localAudio?.(it);
     if (ticket !== playback.sequence) return false;
-    const p = await B.playurl(it.bvid, it.cid, !!options.refresh);
+    let p;
+    if (local?.url) p = { tracks: [local] };
+    else {
+      if (it.localId) throw new Error('本地文件已移动或删除，请重新扫描文件夹');
+      await ensureCid(it);
+      if (ticket !== playback.sequence) return false;
+      p = await B.playurl(it.bvid, it.cid, !!options.refresh);
+    }
     if (ticket !== playback.sequence) return false;
     const track = pickTrack(p);
     if (!track?.url) throw new Error('没有可用音频地址');
@@ -1668,7 +1741,7 @@ async function playTrack(it, idx, options = {}) {
       if (request.position > 0 || request.userSeek) {
         const target = Math.max(curSplitStart ?? 0, Math.min(request.position, (curSplitEnd ?? Infinity) - 0.05));
         playback.lastPosition = target; playback.seekTarget = target;
-        try { audio.currentTime = target; } catch (_) {}
+        try { setPlaybackTime(target); } catch (_) {}
       }
     };
     if (audio.readyState >= 1) seekTo();
@@ -1684,6 +1757,8 @@ async function playTrack(it, idx, options = {}) {
     requestSongCover(it);
     $('#bTitle').textContent = it.title;
     $('#bUp').textContent = songArtist(it);
+    if (typeof updateLikeButton === 'function') updateLikeButton();
+    if (desktopLyricsEnabled) void loadSongLyrics();
     curKbps = track.kbps || 0;
     curFormat = p.flac === track ? 'FLAC' : /mp4a/i.test(track.codecs || '') ? 'AAC' : String(track.codecs || '音频').split('.')[0];
     syncQualityBtn();
@@ -1715,7 +1790,7 @@ async function recoverPlayback() {
   const hasBackup = current.urlIndex + 1 < current.urls.length;
   try {
     await playTrack(current.item, current.idx, { recovery: true, position, attempts: current.attempts + 1,
-      refresh: !hasBackup, urlIndex: hasBackup ? current.urlIndex + 1 : 0, preview: current.preview });
+      refresh: !hasBackup, urlIndex: hasBackup ? current.urlIndex + 1 : 0, preview: current.preview, skipLocal: !!current.track.local });
   } finally { playback.recovering = false; }
 }
 
@@ -1944,6 +2019,7 @@ function clearMiniTheme() {
   document.body.classList.remove('mini-dark');
 }
 function refreshMiniRanges() {
+  $('#seek').style.setProperty('--seek-progress', Math.max(0, Math.min(100, +$('#seek').value / 10)) + '%');
   if (!miniModeState.mini) return;
   for (const id of ['#seek', '#vol']) {
     const input = $(id), min = +input.min || 0, max = +input.max || 100;
@@ -1984,6 +2060,7 @@ audio.addEventListener('timeupdate', refreshMiniRanges);
 for (const id of ['#seek', '#vol']) $(id).addEventListener('input', refreshMiniRanges);
 function renderWindowMode(state) {
   if (!state || typeof state.mini !== 'boolean' || state.revision < miniModeState.revision) return;
+  if (state.mini && typeof closeNowPlaying === 'function') closeNowPlaying(false);
   const wasMini = miniModeState.mini;
   miniModeState = state;
   document.body.classList.toggle('mini-mode', state.mini);
@@ -1997,24 +2074,24 @@ function renderWindowMode(state) {
   if (state.mini) {
     refreshMiniRanges();
     if (!wasMini) { miniCoverUrl = null; void refreshMiniColor(); }
-    for (const id of ['#queuePanel', '#tasksPanel', '#downloadsPanel', '#accountMenu', '#contextMenu']) { const node = $(id); if (node) node.hidden = true; }
+    for (const id of ['#queuePanel', '#tasksPanel', '#accountMenu', '#contextMenu']) { const node = $(id); if (node) node.hidden = true; }
     if (!wasMini) $('#miniRestore').focus({ preventScroll: true });
-    if (!miniModeBusy && document.querySelector('.modal:not([hidden])')) void setMiniMode(false);
+    if (!miniModeBusy && document.querySelector('.modal:not([hidden]), dialog[open]')) void setMiniMode(false);
   } else if (wasMini) {
     miniCoverRequest++; miniCoverUrl = null; clearMiniTheme();
-    const modal = document.querySelector('.modal:not([hidden])');
+    const modal = document.querySelector('.modal:not([hidden]), dialog[open]');
     (modal?.querySelector('input, button, select') || $('#wMini')).focus({ preventScroll: true });
   }
 }
 async function setMiniMode(on) {
   if (miniModeBusy) return;
-  if (on && document.querySelector('.modal:not([hidden])')) return toast('请先完成或关闭当前弹窗');
+  if (on && document.querySelector('.modal:not([hidden]), dialog[open]')) return toast('请先完成或关闭当前弹窗');
   miniModeBusy = true;
   try { renderWindowMode(await B.winMini(on)); }
   catch (error) { toast('切换窗口失败：' + error.message); }
   finally {
     miniModeBusy = false;
-    if (miniModeState.mini && document.querySelector('.modal:not([hidden])')) void setMiniMode(false);
+    if (miniModeState.mini && document.querySelector('.modal:not([hidden]), dialog[open]')) void setMiniMode(false);
   }
 }
 $('#wMini').onclick = () => setMiniMode(true);
@@ -2027,7 +2104,7 @@ $('#miniLayout').onclick = async () => {
   catch (error) { toast('切换小窗形态失败：' + error.message); }
   finally {
     miniModeBusy = false;
-    if (miniModeState.mini && document.querySelector('.modal:not([hidden])')) void setMiniMode(false);
+    if (miniModeState.mini && document.querySelector('.modal:not([hidden]), dialog[open]')) void setMiniMode(false);
   }
 };
 $('#miniPin').onclick = async () => {
@@ -2040,7 +2117,7 @@ for (const node of [$('#miniChrome'), $('#bCover'), $('.bar .now')]) node.addEve
 B.onWinMode(renderWindowMode);
 B.winModeState().then(renderWindowMode).catch(() => {});
 new MutationObserver(() => {
-  if (miniModeState.mini && !miniModeBusy && document.querySelector('.modal:not([hidden])')) void setMiniMode(false);
+  if (miniModeState.mini && !miniModeBusy && document.querySelector('.modal:not([hidden]), dialog[open]')) void setMiniMode(false);
 }).observe(document.body, { subtree: true, attributes: true, attributeFilter: ['hidden'] });
 $('#wMin').onclick = () => B.winMin();
 $('#wMax').onclick = () => B.winMaxToggle();
@@ -2055,6 +2132,8 @@ B.onMediaCmd((cmd) => {
   else if (cmd === 'next') $('#next').click();
   else if (cmd === 'prev') $('#prev').click();
   else if (cmd === 'stop' && !audio.paused) $('#play').click();
+  else if (cmd === 'like') toggleLike();
+  else if (cmd === 'desktopLyrics') $('#desktopLyricsButton').click();
 });
 // 首次同步一次开关状态给主进程（默认都开）
 B.setMediaKeys(localStorage.mediaKeys !== '0');
@@ -2081,6 +2160,7 @@ $('#volumeBalance').onchange = () => {
   } else {
     clearInterval(agcTimer);
     agcTimer = null;
+    balanceGraph?.resetMeter(false);
   }
   toast(on ? '已开启音量平衡' : '已关闭音量平衡');
 };
@@ -2160,7 +2240,6 @@ $('#pmDownload').onclick = () => pmCommit('download');
 
 // 待播队列面板
 $('#qBtn').onclick = () => {
-  $('#downloadsPanel').hidden = true;
   $('#tasksPanel').hidden = true;
   const p = $('#queuePanel');
   p.hidden = !p.hidden;
@@ -2185,16 +2264,16 @@ function pmSetCheck(fn) {
 }
 $('#playAll').onclick = () => playIndex(0);
 
-$('#nfBtn').onclick = () => {
-  const n = $('#nfName').value.trim();
+async function createPlaylist() {
+  const n = await editText('新建歌单', '', '歌单名称');
   if (!n) return;
-  const f = { id: 'f' + Date.now(), name: n, items: [] };
+  if (n.length > 80) return toast('歌单名称最多 80 个字');
+  if (S.folders.some(f => f.name === n)) return toast('已有同名歌单');
+  const f = { id: uniqueId(), name: n, items: [] };
   S.folders.push(f);
   S.active = f.id;
-  $('#nfName').value = '';
-  save(); renderFolders(); renderList();
-};
-$('#nfName').onkeydown = (e) => { if (e.key === 'Enter') $('#nfBtn').click(); };
+  save(); renderFolders(); renderList(); showView('library');
+}
 
 $('#play').onclick = async () => {
   if (audio.error || (!playback.current && playback.requested)) {
@@ -2218,12 +2297,12 @@ $('#mode').onclick = () => {
 audio.onplay = () => setPlayIcon(true);
 audio.onpause = () => { clearTimeout(playback.stallTimer); setPlayIcon(false); setPlaybackStatus('已暂停'); };
 audio.onplaying = () => { clearTimeout(playback.stallTimer); setPlaybackStatus('播放中'); };
-audio.onseeking = () => { scheduleStallRecovery(); };
+audio.onseeking = () => { balanceGraph?.resetMeter(balanceOn() && agcTimer !== null); scheduleStallRecovery(); };
 audio.onseeked = () => {
   if (!playback.current || playback.current.ticket !== playback.sequence || audio.seeking) return;
-  if (playback.seekTarget != null && Math.abs(audio.currentTime - playback.seekTarget) > 0.5) return;
+  if (playback.seekTarget != null && Math.abs(playbackTime() - playback.seekTarget) > 0.5) return;
   playback.seekTarget = null;
-  playback.lastPosition = audio.currentTime;
+  playback.lastPosition = playbackTime();
   if (audio.readyState < 3) scheduleStallRecovery();
   else clearTimeout(playback.stallTimer);
 };
@@ -2244,27 +2323,29 @@ audio.onended = () => {
 audio.ontimeupdate = () => {
   if (!audio.duration || !playback.current || playback.current.ticket !== playback.sequence || audio.seeking) return;
   if (playback.seekTarget != null) {
-    if (Math.abs(audio.currentTime - playback.seekTarget) > 0.5) return;
+    if (Math.abs(playbackTime() - playback.seekTarget) > 0.5) return;
     playback.seekTarget = null;
   }
-  playback.lastPosition = audio.currentTime;
+  playback.lastPosition = playbackTime();
   const st = curSplitStart, en = curSplitEnd;
   if (st != null && en != null) {
-    if (audio.currentTime >= en) {
+    if (playbackTime() >= en) {
       if (playback.current?.preview) { audio.pause(); setPlaybackStatus('试听结束'); return; }
       if (S.mode === 'single') seekPlayback(st);
       else if (!splitAdvancing) { splitAdvancing = true; Promise.resolve(step(1)).finally(() => { splitAdvancing = false; }); }
       return;
     } // 这首播完，自动接下一首
     const span = Math.max(1, en - st);
-    const pos = Math.max(0, audio.currentTime - st);
+    const pos = Math.max(0, playbackTime() - st);
     $('#seek').value = String(Math.round(Math.min(1, pos / span) * 1000));
+    refreshMiniRanges();
     $('#cur').textContent = fmt(pos);
     $('#dur').textContent = fmt(span);
     return;
   }
-  $('#seek').value = String(Math.round((audio.currentTime / audio.duration) * 1000));
-  $('#cur').textContent = fmt(audio.currentTime);
+  $('#seek').value = String(Math.round((playbackTime() / audio.duration) * 1000));
+  refreshMiniRanges();
+  $('#cur').textContent = fmt(playbackTime());
   $('#dur').textContent = fmt(audio.duration);
 };
 $('#seek').oninput = () => {
@@ -2286,6 +2367,48 @@ const volFromPos = (pos) => {
 };
 const posFromVol = (v) => Math.round(Math.sqrt(Math.max(0, Math.min(1, +v || 0))) * 100);
 $('#vol').oninput = () => setUserVolume(volFromPos($('#vol').value));
+const volumeControl = $('.volume-control');
+let volumeCloseTimer = null, volumeDragging = false;
+function openVolume() {
+  clearTimeout(volumeCloseTimer);
+  volumeControl.classList.add('open');
+  $('#volumeButton').setAttribute('aria-expanded', 'true');
+}
+function closeVolume() {
+  clearTimeout(volumeCloseTimer);
+  volumeControl.classList.remove('open');
+  $('#volumeButton').setAttribute('aria-expanded', 'false');
+}
+function scheduleVolumeClose() {
+  clearTimeout(volumeCloseTimer);
+  if (!volumeDragging) volumeCloseTimer = setTimeout(closeVolume, 120);
+}
+volumeControl.addEventListener('pointerenter', openVolume);
+volumeControl.addEventListener('pointerleave', scheduleVolumeClose);
+volumeControl.addEventListener('focusin', openVolume);
+volumeControl.addEventListener('focusout', event => { if (!volumeControl.contains(event.relatedTarget)) scheduleVolumeClose(); });
+$('#volumeButton').onclick = openVolume;
+$('#vol').addEventListener('pointerdown', () => { volumeDragging = true; openVolume(); });
+document.addEventListener('pointerup', () => { volumeDragging = false; if (!volumeControl.matches(':hover')) scheduleVolumeClose(); });
+document.addEventListener('pointercancel', () => { volumeDragging = false; scheduleVolumeClose(); });
+document.addEventListener('pointerdown', event => { if (!volumeControl.contains(event.target)) closeVolume(); });
+volumeControl.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && volumeControl.classList.contains('open')) {
+    event.preventDefault(); event.stopPropagation(); $('#volumeButton').focus(); closeVolume();
+  } else if (event.target === $('#vol') || event.target === $('#volumeButton')) {
+    openVolume();
+    if (event.key === 'Home' || event.key === 'End') {
+      event.preventDefault(); setUserVolume(event.key === 'Home' ? 0 : 1); refreshMiniRanges();
+    }
+  }
+});
+volumeControl.addEventListener('wheel', event => {
+  if (!event.deltaY) return;
+  event.preventDefault();
+  openVolume();
+  setUserVolume(Math.round((userVolume - Math.sign(event.deltaY) * 0.02) * 100) / 100);
+  refreshMiniRanges();
+}, { passive: false });
 $('#loginClose').onclick = () => {
   cancelPendingDownloadLogin();
   clearInterval(pollTimer);
@@ -2300,6 +2423,7 @@ $('#quality').onclick = () => {
 };
 
 document.onkeydown = (e) => {
+  if ($('#playlistImport').open) return;
   if (e.ctrlKey && e.shiftKey && e.code === 'KeyM') { e.preventDefault(); void setMiniMode(!miniModeState.mini); return; }
   if (miniModeState.mini && e.key === 'Escape') { e.preventDefault(); void setMiniMode(false); return; }
   if (!$('#startupLoginModal').hidden) {
@@ -2333,6 +2457,11 @@ document.onkeydown = (e) => {
     if (!$('#settingsModal').hidden) return closeSettings();
     if (!$('#partsModal').hidden) return closePartsPicker();
     if (!$('#loginModal').hidden) return $('#loginClose').click();
+    if (typeof nowPlayingOpen !== 'undefined' && nowPlayingOpen) {
+      if (!$('#nowSettings').hidden) { $('#nowSettings').hidden = true; $('#nowOptions').setAttribute('aria-expanded','false'); }
+      else closeNowPlaying();
+      return;
+    }
   }
   if (e.code === 'Space' && !e.target.closest('input, textarea, select, button, [contenteditable]')) {
     e.preventDefault();
@@ -2378,6 +2507,10 @@ async function selfTest() {
 
 mark('init 调用前');
 initWorkflows();
+initSongLyrics();
+initNowPlaying();
+initLibraryFeatures();
+initCustomShortcuts();
 initDownloads();
 initAppUpdates();
 $('#appUpdateNoticeOpen').onclick = () => { $('#appUpdateNotice').hidden = true; openUpdateSettings(); };

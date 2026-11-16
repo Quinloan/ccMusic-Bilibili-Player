@@ -87,6 +87,13 @@ async function run() {
       assert.deepEqual(quiet.errors, []); await quiet.close();
     }
     const retry = await makePage(browser, { status: { logged: false, stale: true } });
+    const renewal = await makePage(browser, { status: { logged: true, name: '旧登录', renewalRequired: true } });
+    await renewal.waitForFunction(() => accountState.logged);
+    await renewal.evaluate(() => { window.logoutCalls = 0; window.api.logout = async () => { window.logoutCalls++; }; openAccountMenu(); });
+    await renewal.getByText('重新扫码以保持登录', { exact: true }).click();
+    await renewal.locator('#loginModal:not([hidden])').waitFor();
+    assert.equal(await renewal.evaluate(() => window.logoutCalls), 0, 'renewal must not first delete the still-valid session');
+    assert.deepEqual(renewal.errors, []); await renewal.close();
     await retry.waitForFunction(() => accountState.stale); await retry.clock.install();
     await retry.evaluate(() => { window.loginReply = { logged: false }; }); await retry.clock.fastForward(10010);
     await retry.waitForFunction(() => !accountState.stale && window.loginChecks === 2); await retry.clock.runFor(350);

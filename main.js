@@ -11,6 +11,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { createWindowMode } = require('./window-mode.cjs');
+const biliSession = require('./bili-session.cjs');
 
 // GitHub 仓库（用于「关于」页与检查更新）
 const GITHUB_REPO = process.env.CCMUSIC_REPO || 'Quinloan/ccMusic-Bilibili-Player';
@@ -29,6 +30,7 @@ let agent = null;
 
 let cookies = {};   // buvid3/buvid4 + 登录态
 let cookiesLoaded = false;
+let cookieMeta = {}, loginMaintenanceState = {}, loginGeneration = 0, loginQrKey = '';
 let wbi = null;
 let wbiAt = 0;
 
@@ -44,15 +46,17 @@ function readStore() {
 }
 function writeStore(data) {
   fs.mkdirSync(path.dirname(DATA_FILE()), { recursive: true });
-  fs.writeFileSync(DATA_FILE(), JSON.stringify(data, null, 2), 'utf8');
+  const temporary = DATA_FILE() + '.tmp';
+  fs.writeFileSync(temporary, JSON.stringify(data, null, 2), 'utf8');
+  fs.renameSync(temporary, DATA_FILE());
 }
 
 // ---------------------------------------------------------------- 网络
-function cookieHeader() {
-  return Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join('; ');
+function cookieHeader(url = API) {
+  return biliSession.headerFor(cookies, cookieMeta, url);
 }
 
-function apiHeaders(extra = {}) {
+function apiHeaders(extra = {}, url = API) {
   return {
     'User-Agent': UA,
     Referer: REFERER,
@@ -65,16 +69,35 @@ function apiHeaders(extra = {}) {
     'sec-fetch-dest': 'empty',
     'sec-fetch-mode': 'cors',
     'sec-fetch-site': 'same-site',
-    Cookie: cookieHeader(),
+    Cookie: cookieHeader(url),
     ...extra,
   };
 }
 
-async function apiGet(base, p, params = {}, signal) {
+async function apiGet(base, p, params = {}, signal = AbortSignal.timeout(15000)) {
   const u = new URL(base + p);
   for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
-  const r = await ufetch(u, { headers: apiHeaders(), dispatcher: agent, signal });
-  return r.json().catch(() => null);
+  const sentSession = cookies.SESSDATA, generation = loginGeneration;
+  const r = await ufetch(u, { headers: apiHeaders({}, u), dispatcher: agent, signal, redirect: 'error' });
+  if (p.endsWith('/playurl') && [412, 429].includes(r.status)) {
+    await r.body?.cancel();
+    return { code: r.status === 412 ? -412 : -429, message: r.status === 412 ? 'request was banned' : '请求过于频繁' };
+  }
+  const j = await r.json().catch(() => null);
+  if (r.ok && j?.code === 0 && sentSession === cookies.SESSDATA && generation === loginGeneration) {
+    captureCookies(r, u);
+  }
+  return j;
+}
+
+function captureCookies(response, url, allowAccountSwitch = false) {
+  const next = biliSession.mergeCookies(cookies, cookieMeta, response.headers.getSetCookie?.() || [], String(url), { allowAccountSwitch });
+  if (next.changed) {
+    const cur = readStore() || {};
+    cur.cookies = next.cookies; cur.cookieMeta = next.meta; cur.loginMaintenance = loginMaintenanceState;
+    try { writeStore(cur); } catch (_) { return; }
+    cookies = next.cookies; cookieMeta = next.meta;
+  }
 }
 
 const MIXIN = [
@@ -85,22 +108,28 @@ const MIXIN = [
 ];
 const mixinKeyOf = (r) => MIXIN.map((i) => r[i]).join('').slice(0, 32);
 
+let wbiPending = null;
 async function refreshWbi() {
-  const nav = await apiGet(API, '/x/web-interface/nav');
+  if (wbiPending) return wbiPending;
+  wbiPending = (async () => {
+  const nav = await apiGet(API, '/x/web-interface/nav', {}, AbortSignal.timeout(10000));
   const img = nav && nav.data && nav.data.wbi_img && nav.data.wbi_img.img_url;
   const sub = nav && nav.data && nav.data.wbi_img && nav.data.wbi_img.sub_url;
   if (img && sub) {
     const cut = (s) => s.split('/').pop().split('.')[0];
     wbi = { img: cut(img), sub: cut(sub) };
     wbiAt = Date.now();
-  }
+  } else throw new Error('暂时无法获取B站请求签名，请稍后重试');
+  })();
+  try { return await wbiPending; } finally { wbiPending = null; }
 }
 async function ensureWbi() {
   if (!wbi || Date.now() - wbiAt > 6 * 3600 * 1000) await refreshWbi();
 }
 function signWbi(params) {
   const mk = mixinKeyOf(wbi.img + wbi.sub);
-  const s = Object.assign({}, params, { wts: Math.floor(Date.now() / 1000) });
+  const s = Object.fromEntries(Object.entries({ ...params, wts: Math.floor(Date.now() / 1000) })
+    .map(([key, value]) => [key, typeof value === 'string' ? value.replace(/[!'()*]/g, '') : value]));
   const q = Object.keys(s)
     .sort()
     .map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(String(s[k]).replace(/[!'()*]/g, ''))}`)
@@ -112,9 +141,9 @@ async function initSession() {
   loadCookies();
   // 设备指纹与 WBI 密钥互不依赖，并行取
   await Promise.all([
-    apiGet(API, '/x/frontend/finger/spi').then((spi) => {
-      if (spi && spi.data && spi.data.b_3) cookies.buvid3 = spi.data.b_3;
-      if (spi && spi.data && spi.data.b_4) cookies.buvid4 = spi.data.b_4;
+    (cookies.buvid3 && cookies.buvid4 ? Promise.resolve(null) : apiGet(API, '/x/frontend/finger/spi', {}, AbortSignal.timeout(10000))).then((spi) => {
+      if (!cookies.buvid3 && spi?.data?.b_3) cookies.buvid3 = spi.data.b_3;
+      if (!cookies.buvid4 && spi?.data?.b_4) cookies.buvid4 = spi.data.b_4;
     }),
     refreshWbi(),
   ]);
@@ -146,24 +175,136 @@ async function ensureSession() {
       throw e;
     });
   }
-  return sessionReady;
+  await sessionReady;
+  await loginMaintenance.check();
 }
 
 function persistCookies() {
   const cur = readStore() || {};
   cur.cookies = cookies;
+  cur.cookieMeta = cookieMeta;
+  cur.loginMaintenance = loginMaintenanceState;
   writeStore(cur);
 }
+
+function saveSessionSnapshot(state) {
+  const cur = readStore() || {};
+  cur.cookies = state.cookies; cur.cookieMeta = state.meta; cur.loginMaintenance = state.auth;
+  writeStore(cur);
+  cookies = state.cookies; cookieMeta = state.meta; loginMaintenanceState = state.auth;
+}
+
+const loginMaintenance = biliSession.createSessionMaintenance({
+  getState: () => ({ cookies: { ...cookies }, meta: { ...cookieMeta }, auth: { ...loginMaintenanceState }, generation: loginGeneration }),
+  commit: saveSessionSnapshot, // Durable new pair before retiring the old session.
+  request: (url, options) => ufetch(url, { ...options, dispatcher: agent }),
+  headers: () => apiHeaders(),
+});
 
 // ---------------------------------------------------------------- IPC
 ipcMain.handle('store:get', () => {
   const s = readStore();
   return s ? s.library || null : null;
 });
+const playlistReads = new Map();
+let localAudioStore;
+function localAudio() {
+  if (!localAudioStore) localAudioStore = require('./local-audio.cjs').createLocalAudioStore(path.join(app.getPath('userData'), 'local-audio.json'));
+  return localAudioStore;
+}
+let musicLibrary;
+function localMusic() {
+  if (!musicLibrary) musicLibrary = require('./music-library.cjs').createMusicLibrary(app.getPath('userData'));
+  return musicLibrary;
+}
+ipcMain.handle('audio:local', (_event, item) => item?.localId ? localMusic().find(item) : localAudio().find(item));
+ipcMain.handle('local-library:list', () => localMusic().list());
+ipcMain.handle('local-library:scan', async (event) => {
+  const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
+    title: '选择本地音乐文件夹', properties: ['openDirectory'],
+  });
+  if (result.canceled || !result.filePaths?.length) return null;
+  return localMusic().scan(result.filePaths[0], progress => {
+    if (!event.sender.isDestroyed()) event.sender.send('local-library:progress', progress);
+  });
+});
+ipcMain.handle('local-library:reveal', (event, item) => {
+  const file = localMusic().file(item);
+  if (file) shell.showItemInFolder(file);
+  return !!file;
+});
+ipcMain.handle('audio:link-local', async (event, item) => {
+  if (!/^BV[\da-z]{10}$/i.test(item?.bvid || '')) throw new Error('曲目信息无效');
+  const result = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
+    title: '选择《' + String(item.title || '').slice(0, 80) + '》对应的本地单曲',
+    properties: ['openFile'], filters: [{ name: '音频', extensions: ['mp3', 'flac', 'm4a', 'wav', 'ogg', 'opus'] }],
+  });
+  if (result.canceled || !result.filePaths?.[0]) return false;
+  localAudio().remember(item, result.filePaths[0]);
+  return true;
+});
+ipcMain.handle('playlist:draft-get', () => readStore()?.playlistImport || null);
+ipcMain.handle('playlist:draft-save', (_event, draft) => {
+  const data = readStore() || {};
+  const jobs = draft?.jobs || (draft ? [draft] : []);
+  if (!Array.isArray(jobs) || jobs.some(job => !job?.id || !Array.isArray(job.items) || !Number.isInteger(job.index))) throw new Error('导入进度无效');
+  const committed = new Set((data.library?.folders || []).map(folder => folder.importJobId).filter(Boolean));
+  if (draft?.jobs) draft = { version: 2, jobs: jobs.filter(job => !committed.has(job.id)) };
+  data.playlistImport = draft;
+  writeStore(data);
+  return true;
+});
+ipcMain.handle('playlist:cancel-read', (event, id) => {
+  const entry = playlistReads.get(event.sender.id);
+  if (entry?.id === id) entry.controller.abort();
+});
+ipcMain.handle('playlist:read-share', async (event, input, id) => {
+  await netInit();
+  const senderId = event.sender.id;
+  playlistReads.get(senderId)?.controller.abort();
+  const controller = new AbortController();
+  playlistReads.set(senderId, { id, controller });
+  try {
+    return await require('./external-playlist.cjs').readPlaylist(input,
+      (url, options) => ufetch(url, { ...options, dispatcher: agent }),
+      async (path, params, signal) => { loadCookies(); return apiGet(API, path, params, signal); }, controller.signal);
+  } finally {
+    if (playlistReads.get(senderId)?.controller === controller) playlistReads.delete(senderId);
+  }
+});
+ipcMain.handle('playlist:save-file', async (event, folder) => {
+  if (!folder || typeof folder.name !== 'string' || !Array.isArray(folder.items)) throw new Error('无效歌单');
+  const name = require('./audio-downloads.cjs').safeName(folder.name);
+  const folders = require('./renderer/library-model.js').importedFolders({ folders: [folder] });
+  const content = JSON.stringify({ format: 'ccmusic-library', version: 1, folders }, null, 2);
+  return savePlaylistDocument(event, name, content, 'json', '保存歌单');
+});
+ipcMain.handle('playlist:save-report', (event, name, content) => {
+  if (typeof content !== 'string' || !content.trim()) throw new Error('没有未导入记录');
+  return savePlaylistDocument(event, require('./audio-downloads.cjs').safeName(name) + '-未导入清单',
+    '\uFEFF' + content.replace(/\r?\n/g, '\r\n'), 'txt', '保存未导入清单');
+});
+async function savePlaylistDocument(event, name, content, extension, title) {
+  const { filePath, canceled } = await dialog.showSaveDialog(BrowserWindow.fromWebContents(event.sender), {
+    title, defaultPath: name + '.' + extension, filters: [{ name: title, extensions: [extension] }],
+  });
+  if (canceled || !filePath) return false;
+  const temp = path.join(path.dirname(filePath), '.ccmusic-' + require('node:crypto').randomUUID() + '.tmp');
+  try {
+    await fs.promises.writeFile(temp, content, { encoding: 'utf8', flag: 'wx' });
+    await fs.promises.rename(temp, filePath);
+  } finally { await fs.promises.rm(temp, { force: true }); }
+  return true;
+}
 ipcMain.handle('store:set', (_e, library) => {
   loadCookies();
   const cur = readStore() || {};
   cur.library = library;
+  if (cur.playlistImport) {
+    const committed = new Set((library?.folders || []).map(folder => folder.importJobId).filter(Boolean));
+    if (cur.playlistImport.jobs) cur.playlistImport.jobs = cur.playlistImport.jobs.filter(job => !committed.has(job.id));
+    else if (committed.has(cur.playlistImport.id)) cur.playlistImport = null;
+  }
   cur.cookies = cookies;
   writeStore(cur);
   return true;
@@ -173,6 +314,11 @@ function loadCookies() {
   if (cookiesLoaded) return;
   const saved = readStore();
   if (saved?.cookies) cookies = Object.assign({}, saved.cookies);
+  cookieMeta = saved?.cookieMeta || {};
+  loginMaintenanceState = saved?.loginMaintenance || {};
+  for (const name of ['buvid3', 'buvid4']) {
+    if (cookieMeta[name]?.expires && cookieMeta[name].expires <= Date.now()) { delete cookies[name]; delete cookieMeta[name]; }
+  }
   cookiesLoaded = true;
 }
 async function getLoginState() {
@@ -180,8 +326,9 @@ async function getLoginState() {
   if (!cookies.SESSDATA) return { logged: false };
   // Authentication does not depend on fingerprint/WBI initialization succeeding.
   await netInit();
+  await loginMaintenance.check();
   const sessionToken = cookies.SESSDATA;
-  const nav = await apiGet(API, '/x/web-interface/nav', {}, AbortSignal.timeout(15000));
+  const nav = await apiGet(API, '/x/web-interface/nav', {}, AbortSignal.timeout(8000));
   if (cookies.SESSDATA !== sessionToken) return { logged: false, stale: true, saved: !!cookies.SESSDATA };
   if (nav && nav.code === 0 && nav.data && nav.data.isLogin) {
     return {
@@ -189,11 +336,13 @@ async function getLoginState() {
       name: nav.data.uname,
       face: nav.data.face,
       level: nav.data.level_info ? nav.data.level_info.current_level : null,
+      renewalRequired: !!loginMaintenanceState.renewalRequired,
     };
   }
   if (nav && (nav.code === -101 || (nav.code === 0 && nav.data?.isLogin === false))) {
     // B 站明确告知未登录，凭据确实失效了才清除
     delete cookies.SESSDATA;
+    loginGeneration++; loginMaintenanceState = {};
     persistCookies();
     return { logged: false };
   }
@@ -203,18 +352,28 @@ async function getLoginState() {
 ipcMain.handle('login:state', getLoginState);
 
 ipcMain.handle('login:logout', async () => {
-  await ensureSession();
+  loadCookies();
+  loginGeneration++; loginMaintenanceState = {}; loginQrKey = '';
   for (const k of Object.keys(cookies)) {
-    if (k !== 'buvid3' && k !== 'buvid4') delete cookies[k];
+    if (k !== 'buvid3' && k !== 'buvid4') { delete cookies[k]; delete cookieMeta[k]; }
   }
   streamCache.clear();
   persistCookies();
   return true;
 });
 
-const searchVideos = require('./video-search.cjs').createVideoSearch(async (keyword, page) => {
+async function searchVideoPage(keyword, page) {
   const params = signWbi({ search_type: 'video', keyword, page, order: 'totalrank' });
   return apiGet(API, '/x/web-interface/wbi/search/type', params, AbortSignal.timeout(15000));
+}
+const searchVideos = require('./video-search.cjs').createVideoSearch(searchVideoPage);
+ipcMain.handle('playlist:match-search', async (_event, query) => {
+  await ensureSession();
+  await ensureWbi();
+  const j = await searchVideoPage(String(query).slice(0, 240), 1);
+  if (j?.code !== 0 || !Array.isArray(j?.data?.result))
+    throw new Error('搜索失败 ' + (j?.code || '') + '：' + (j?.data?.v_voucher ? 'B 站需要验证' : j?.message || '请稍后继续导入'));
+  return j.data.result.filter(row => row.bvid).map(require('./video-search.cjs').mapVideo);
 });
 ipcMain.handle('bili:search', async (_e, keyword, page = 1) => {
   await ensureSession();
@@ -291,7 +450,7 @@ ipcMain.handle('bili:video', async (_e, id) => {
 // 短链/分享链接跟随跳转，取最终地址以便提取 BV 号
 ipcMain.handle('bili:resolve', async (_e, url) => {
   const u = /^https?:\/\//i.test(url) ? url : 'https://' + url;
-  const r = await ufetch(u, { headers: apiHeaders(), dispatcher: agent, redirect: 'follow' });
+  const r = await ufetch(u, { headers: apiHeaders({}, u), dispatcher: agent, redirect: 'follow' });
   return r.url;
 });
 
@@ -301,34 +460,47 @@ ipcMain.handle('app:copyText', (_e, text) => {
 });
 
 const streamCache = new Map();
+const streamPending = new Map(), streamCompatibility = new Map(), streamCooldown = new Map();
 async function getPlayurl(bvid, cid, refresh = false) {
-  const key = `${bvid}:${cid}`;
+  if (!/^BV[\da-z]{10}$/i.test(String(bvid)) || !Number.isSafeInteger(Number(cid)) || Number(cid) <= 0) throw new Error('视频或分P信息无效');
+  cid = Number(cid);
+  await ensureSession();
+  const identity = createHash('sha256').update(JSON.stringify([cookies.SESSDATA || '', cookies.DedeUserID || '', cookies.buvid3 || '', cookies.buvid4 || ''])).digest('hex');
+  const key = `${identity}:${bvid}:${cid}`;
   if (refresh) streamCache.delete(key);
   const hit = streamCache.get(key);
   if (hit && hit.expireAt > Date.now()) return hit.payload;
-
-  await ensureSession();
-  await ensureWbi();
-  const j = await apiGet(
-    API,
-    '/x/player/wbi/playurl',
-    signWbi({ bvid, cid, qn: 127, fnval: 4048, fnver: 0, fourk: 1 }),
-    AbortSignal.timeout(15000)
-  );
-  if (!j || j.code !== 0) throw new Error((j && j.message) || '播放地址获取失败');
-  const audioInfo = require('./audio-downloads.cjs').normalizePlayInfo(j.data);
-  if (!audioInfo.tracks.length && !audioInfo.flac && !audioInfo.dolby) throw new Error('该视频没有独立音轨');
-  const payload = {
-    ...audioInfo,
-    expireAt: Date.now() + 100 * 60 * 1000,
-  };
-  streamCache.set(key, { payload, expireAt: payload.expireAt });
-  return payload;
+  if (streamPending.has(key)) return streamPending.get(key);
+  const remaining = (streamCooldown.get(identity) || 0) - Date.now();
+  if (remaining > 0) throw new Error(`B站暂时限制了音源请求，请 ${Math.ceil(remaining / 1000)} 秒后重试；若持续失败，请到B站网页确认登录或完成验证。`);
+  const work = (async () => {
+    await ensureWbi();
+    const compatible = (streamCompatibility.get(identity) || 0) > Date.now();
+    const endpoints = compatible ? ['/x/player/playurl'] : ['/x/player/wbi/playurl', '/x/player/playurl'];
+    for (let i = 0; i < endpoints.length; i++) {
+      const j = await apiGet(API, endpoints[i], signWbi({ bvid, cid, qn: 127, fnval: 4048, fnver: 0, fourk: 1 }), AbortSignal.timeout(15000));
+      if ([-412, -352, -429].includes(j?.code)) {
+        if (j.code !== -429 && i + 1 < endpoints.length) continue;
+        streamCooldown.set(identity, Date.now() + 30000);
+        throw new Error('B站暂时拒绝了音源请求，请稍后重试；若网页可播放，请到B站网页确认登录或完成验证。');
+      }
+      if (!j || j.code !== 0) throw new Error((j && j.message) || '播放地址获取失败');
+      const audioInfo = require('./audio-downloads.cjs').normalizePlayInfo(j.data);
+      if (!audioInfo.tracks.length && !audioInfo.flac && !audioInfo.dolby) throw new Error('该视频没有独立音轨');
+      if (endpoints[i] === '/x/player/playurl') streamCompatibility.set(identity, Date.now() + 10 * 60 * 1000);
+      const payload = { ...audioInfo, expireAt: Date.now() + 100 * 60 * 1000 };
+      streamCache.set(key, { payload, expireAt: payload.expireAt });
+      return payload;
+    }
+  })();
+  streamPending.set(key, work);
+  try { return await work; } finally { streamPending.delete(key); }
 }
 
 ipcMain.handle('bili:playurl', (_e, bvid, cid, refresh) => getPlayurl(bvid, cid, !!refresh));
 
 const downloadManager = require('./download-ipc.cjs').registerDownloads({
+  onDownloaded: (item, file) => localAudio().remember(item, file),
   app, ipcMain, dialog, BrowserWindow, shell, getLoginState, getPlayurl,
   executable: path.join(app.isPackaged ? process.resourcesPath : path.join(__dirname, 'resources'), 'download-audio', 'ffmpeg.exe'),
   resolveItem: async item => {
@@ -452,6 +624,16 @@ async function getArtworkResolver() {
 }
 ipcMain.handle('artwork:resolve', async (_e, match) => (await getArtworkResolver()).resolve(match));
 ipcMain.handle('song:resolve-title', async (_e, input) => (await getArtworkResolver()).resolveTitle(input));
+let lyricsProvider;
+ipcMain.handle('song:lyrics', async (_e, input) => {
+  await netInit();
+  if (!lyricsProvider) lyricsProvider = require('./song-lyrics.cjs').createLyricsProvider({
+    request: (url, options) => ufetch(url, { ...options, dispatcher: agent }),
+    resolveTitle: async input => (await getArtworkResolver()).resolveTitle(input),
+    cacheFile: path.join(app.getPath('userData'), 'song-lyrics-cache.json'),
+  });
+  return lyricsProvider.lookup({ title: String(input?.title || '').slice(0, 500), artist: String(input?.artist || '').slice(0, 200), neteaseId: String(input?.neteaseId || '') });
+});
 // Short-lived, renderer-owned PCM samples let confirmation reuse the first decode.
 // Evicted/expired sessions can be decoded again without changing confirmed cuts.
 const splitSessions = new Map();
@@ -603,7 +785,7 @@ ipcMain.handle('split:analyze', async (e, bvid, cid, maxSec, description = '', r
   try {
     if (audioFile) audioFd = fs.openSync(audioFile, 'w');
     send({ stage: 'download', pct: 0 });
-    const res = await ufetch(track.url, { headers: apiHeaders(), dispatcher: agent, signal: AbortSignal.any([signal, downloadAbort.signal, AbortSignal.timeout(300000)]) });
+    const res = await ufetch(track.url, { headers: apiHeaders({}, track.url), dispatcher: agent, signal: AbortSignal.any([signal, downloadAbort.signal, AbortSignal.timeout(300000)]) });
     if (!res.ok || !res.body) throw new Error('音频下载失败 HTTP ' + res.status);
     const total = +(res.headers.get('content-length') || 0);
 
@@ -736,6 +918,7 @@ ipcMain.handle('login:qrcode', async () => {
   await ensureSession();
   const j = await apiGet(PASSPORT, '/x/passport-login/web/qrcode/generate');
   if (!j || j.code !== 0) throw new Error('二维码生成失败');
+  loginQrKey = j.data.qrcode_key;
   const QRCode = (await import('qrcode')).default;
   const dataUrl = await QRCode.toDataURL(j.data.url, {
     margin: 1,
@@ -746,20 +929,23 @@ ipcMain.handle('login:qrcode', async () => {
 });
 
 ipcMain.handle('login:poll', async (_e, key) => {
+  if (!key || key !== loginQrKey) return { status: 'expired' };
   const u = new URL(PASSPORT + '/x/passport-login/web/qrcode/poll');
   u.searchParams.set('qrcode_key', key);
-  const r = await ufetch(u, { headers: apiHeaders(), dispatcher: agent });
+  const generation = loginGeneration;
+  const r = await ufetch(u, { headers: apiHeaders({}, u), dispatcher: agent, redirect: 'error', signal: AbortSignal.timeout(10000) });
   const j = await r.json().catch(() => null);
   const code = j && j.data ? j.data.code : j && j.code;
   if (code === 0) {
-    const raw = typeof r.headers.getSetCookie === 'function' ? r.headers.getSetCookie() : [];
-    for (const c of raw) {
-      const m = c.match(/^([^=]+)=([^;]*)/);
-      if (m) cookies[m[1]] = m[2];
-    }
-    persistCookies();
+    if (generation !== loginGeneration || key !== loginQrKey) return { status: 'expired' };
+    const baseCookies = { ...cookies }, baseMeta = { ...cookieMeta };
+    for (const name of ['SESSDATA', 'bili_jct', 'DedeUserID', 'DedeUserID__ckMd5', 'sid']) { delete baseCookies[name]; delete baseMeta[name]; }
+    const next = biliSession.mergeCookies(baseCookies, baseMeta, r.headers.getSetCookie?.() || [], String(u), { allowAccountSwitch: true });
+    if (!r.ok || !next.cookies.SESSDATA || !next.cookies.bili_jct) throw new Error('未收到完整登录凭据，请重新扫码');
+    saveSessionSnapshot({ cookies: next.cookies, meta: next.meta, auth: { refreshToken: typeof j.data?.refresh_token === 'string' ? j.data.refresh_token : '' } });
+    loginGeneration++; loginQrKey = '';
     streamCache.clear();
-    await refreshWbi();
+    await refreshWbi().catch(() => {});
     return { status: 'done' };
   }
   if (code === 86090) return { status: 'scanned' };
@@ -817,6 +1003,16 @@ ipcMain.handle('settings:mediaKeys', (_e, on) => {
   mediaKeysOn = !!on;
   applyMediaKeys();
 });
+let customShortcuts;
+function getCustomShortcuts() {
+  if (!customShortcuts) customShortcuts = require('./custom-shortcuts.cjs').createShortcuts({
+    shortcut: globalShortcut, send: sendMedia, read: () => readStore()?.shortcuts || {},
+    write: shortcuts => { const saved = readStore() || {}; saved.shortcuts = shortcuts; writeStore(saved); },
+  });
+  return customShortcuts;
+}
+ipcMain.handle('shortcuts:get', () => getCustomShortcuts().state());
+ipcMain.handle('shortcuts:set', (_event, bindings) => getCustomShortcuts().configure(bindings));
 ipcMain.handle('settings:closeToTray', (_e, on) => {
   closeToTray = !!on;
 });
@@ -872,16 +1068,11 @@ ipcMain.handle('diag:api', async (_e, input) => {
   t0 = Date.now();
   let url;
   try {
-    const j = await apiGet(
-      API,
-      '/x/player/wbi/playurl',
-      signWbi({ bvid, cid, qn: 64, fnval: 16, fnver: 0, fourk: 0 })
-    );
-    if (!j || j.code !== 0) throw new Error((j && j.message) || '接口返回异常');
-    const a = (j.data && j.data.dash && j.data.dash.audio) || [];
+    const info = await getPlayurl(bvid, cid);
+    const a = [info.flac, info.dolby, ...info.tracks].filter(Boolean);
     if (!a.length) throw new Error('没有独立音轨');
-    url = a[a.length - 1].baseUrl;
-    push('获取音频直链', true, `${a.length} 条音轨，最高 ${Math.round((a[a.length - 1].bandwidth || 0) / 1000)}kbps`, Date.now() - t0);
+    url = a[0].url;
+    push('获取音频直链', true, `${a.length} 条音轨，首选 ${a[0].kbps}kbps`, Date.now() - t0);
   } catch (e) {
     push('获取音频直链', false, e.message, Date.now() - t0);
     return { ok: false, steps };
@@ -1030,7 +1221,7 @@ function applyMediaKeys() {
     mediaRegistered = true;
     console.log('[media] 已注册 ' + Object.keys(MEDIA_KEYS).length + ' 个媒体键');
   } else if (!mediaKeysOn && mediaRegistered) {
-    globalShortcut.unregisterAll();
+    for (const accelerator of Object.keys(MEDIA_KEYS)) globalShortcut.unregister(accelerator);
     mediaRegistered = false;
   }
 }
@@ -1057,6 +1248,10 @@ function createWindow() {
   });
 
   mainWin = win;
+  require('./desktop-lyrics.cjs').createDesktopLyrics({
+    BrowserWindow, ipcMain, screen, host: win,
+    preferences: path.join(app.getPath('userData'), 'desktop-lyrics.json'),
+  });
   const mode = createWindowMode({ win, screen,
     preferences: path.join(app.getPath('userData'), 'window-layout.json'),
     emit: state => { if (!win.isDestroyed()) win.webContents.send('win:mode', state); },
@@ -1141,6 +1336,7 @@ app.whenReady().then(async () => {
   createWindow();
   setupTray();
   applyMediaKeys(); // 默认开启，渲染端读完设置后会再同步一次
+  getCustomShortcuts().start();
   app.on('before-quit', () => globalShortcut.unregisterAll());
   setTimeout(() => {
     netInit()

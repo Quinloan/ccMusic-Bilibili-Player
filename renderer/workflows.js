@@ -1,5 +1,8 @@
 // Persistent task feedback and reversible library operations. No network calls at load time.
 const splitTasks = new Map();
+let splitDraftsReady = false;
+let playlistImportJob = null;
+const playlistImportJobs = new Map();
 const taskDismissTimers = new Map();
 const TASK_DONE_VISIBLE_MS = 5000;
 const coverRequests = new Map();
@@ -12,7 +15,7 @@ function consumeMetadata(entry, item, apply) {
   return entry.consumers.get(item);
 }
 function needsSongTitle(item, force = false) {
-  if (!item || item.identifySource === 'manual') return false;
+  if (!item || item.localId || item.identifySource === 'manual') return false;
   if (item.split ? (!force && item.identifySource !== 'description') : (item.identifySource && item.identifySource !== 'title')) return false;
   const part = item.partTitle || (+item.page || 1) > 1 || (item.vtitle && item.vtitle !== (item.sourceTitle || item.title));
   const duration = LibraryModel.duration(item.duration);
@@ -120,15 +123,15 @@ async function parseSongMetadata(items) {
     return { matched, missed };
   })().finally(() => {
     metadataParseJobs.delete(key); renderTasks();
-    if (!metadataParseJobs.size && !splitTasks.size) $('#tasksPanel').hidden = true;
+    if (!metadataParseJobs.size && !splitTasks.size && !playlistImportJobs.size) $('#tasksPanel').hidden = true;
   });
   job.progress = progress;
   metadataParseJobs.set(key, job);
-  $('#downloadsPanel').hidden = true; $('#queuePanel').hidden = true; $('#tasksPanel').hidden = false;
+  $('#queuePanel').hidden = true; $('#tasksPanel').hidden = false;
   renderTasks(); return job;
 }
 let coverScanFrame = null;
-const itemCover = item => LibraryModel.songCoverUrl(item?.songCover) || item?.cover || '';
+const itemCover = item => LibraryModel.songCoverUrl(item?.songCover) || item?.cover || (item?.localId ? LOGO_SRC : '');
 function setSongCover(image, item) {
   image.dataset.fallback = item?.cover || '';
   const desired = itemCover(item);
@@ -147,7 +150,7 @@ function requestSongCover(item, match) {
   if (!item) return Promise.resolve('');
   if (!match && needsSongTitle(item)) { requestSongTitle(item, { priority: 1 }); return Promise.resolve(''); }
   if (LibraryModel.songCoverUrl(item.songCover)) return Promise.resolve(item.songCover);
-  if (!match && !item.neteaseId && !['netease', 'shazam', 'lyrics', 'description', 'title'].includes(item.identifySource)) return Promise.resolve('');
+  if (!match && !item.neteaseId && !['netease', 'shazam', 'lyrics', 'description', 'title', 'playlist'].includes(item.identifySource)) return Promise.resolve('');
   const input = match || { name: item.title, artist: item.artist || item.referenceArtist || '', neteaseId: item.neteaseId };
   const key = itemKey(item), token = input.neteaseId || `${input.name}|${input.artist}`;
   let entry = coverRequests.get(key);
@@ -480,7 +483,7 @@ function dismissSplitTask(task, automatic = false) {
   pendingSplitReviews.delete(task.id);
   if (task.result?.sessionId) B.splitRelease(task.result.sessionId).catch(() => {});
   renderTasks();
-  if (automatic && !splitTasks.size && !metadataParseJobs.size) $('#tasksPanel').hidden = true;
+  if (automatic && !splitTasks.size && !metadataParseJobs.size && !playlistImportJobs.size) $('#tasksPanel').hidden = true;
 }
 function cancelSplitTask(task) {
   if (task.state !== 'running') return;
@@ -522,14 +525,14 @@ function renderTasks() {
   for (const task of list) if (task.state === 'done' && !taskDismissTimers.has(task.id)) {
     taskDismissTimers.set(task.id, setTimeout(() => dismissSplitTask(task, true), TASK_DONE_VISIBLE_MS));
   }
-  const state = list.some(task => task.state === 'error') ? 'error' : list.some(task => ['ready', 'download-ready'].includes(task.state)) ? 'attention' : list.some(task => task.state === 'running') || metadataParseJobs.size ? 'running' : 'idle';
+  const state = list.some(task => task.state === 'error') ? 'error' : list.some(task => ['ready', 'download-ready'].includes(task.state)) || [...playlistImportJobs.values()].some(job => job.state === 'ready' || job.state === 'paused') ? 'attention' : list.some(task => task.state === 'running') || metadataParseJobs.size || playlistImportJobs.size ? 'running' : 'idle';
   setActivityIndicator('#taskBtn', state, '后台任务');
-  $('#taskEmpty').hidden = !!(list.length || metadataParseJobs.size);
+  $('#taskEmpty').hidden = !!(list.length || metadataParseJobs.size || playlistImportJobs.size);
   $('#tasksTools').hidden = !list.length;
   $('#tasksCancelAll').disabled = !list.some(task => task.state === 'running');
   $('#tasksClear').disabled = !list.some(task => ['done', 'error', 'cancelled'].includes(task.state));
   const metadataCards = [...metadataParseJobs.values()].map(job => `<div class="task-card"><strong>${esc(job.progress.title)}</strong><small>正在解析歌曲信息 ${job.progress.done}/${job.progress.total}</small><progress max="${job.progress.total}" value="${job.progress.done}"></progress></div>`).join('');
-  $('#taskList').innerHTML = metadataCards + list.map(task => {
+  $('#otherTaskCards').innerHTML = metadataCards + list.map(task => {
     const p = task.progress || {};
     const status = task.state === 'download-ready' ? `${splitDownloadItems(task).length} 首待下载`
       : task.state === 'ready' ? `${task.result.tracks.length} 首${task.intent === 'download' ? '待确认分段' : '待加入'}`
@@ -561,7 +564,7 @@ function renderTasks() {
     }
     else dismissSplitTask(task);
   };
-  try { localStorage.splitTaskDrafts = JSON.stringify(list.filter(task => task.state !== 'done').map(task => ({ folderId: task.folder?.id, key: itemKey(task.item),
+  try { if (splitDraftsReady) localStorage.splitTaskDrafts = JSON.stringify(list.filter(task => task.state !== 'done').map(task => ({ folderId: task.folder?.id, key: itemKey(task.item),
     intent: task.intent, downloadPhase: task.downloadPhase, downloadItem: task.intent === 'download' ? task.item : undefined,
     description: task.description, state: task.state, result: task.result, error: task.error, batch: task.batch, original: task.batch || task.previous ? task.item : undefined,
     previousKeys: task.previous?.map(itemKey) }))); } catch (_) {}
@@ -571,11 +574,11 @@ function splitTaskSourcePresent(task) {
   return S.folders.includes(task.folder) && (task.previous ? task.previous.length > 0 && task.previous.every(item => task.folder.items.includes(item)) : task.folder.items.includes(task.item));
 }
 async function runSplitTask(f, item, description, previous = null, intent = 'library') {
-  if ([...splitTasks.values()].some(t => (t.item === item || (intent === 'download' && t.intent === 'download' && sourceKey(t.item) === sourceKey(item)) || (previous && t.previous && t.folder === f && sourceKey(t.item) === sourceKey(item))) && ['running', 'ready', 'download-ready'].includes(t.state))) { $('#downloadsPanel').hidden = true; $('#queuePanel').hidden = true; $('#tasksPanel').hidden = false; return; }
+  if ([...splitTasks.values()].some(t => (t.item === item || (intent === 'download' && t.intent === 'download' && sourceKey(t.item) === sourceKey(item)) || (previous && t.previous && t.folder === f && sourceKey(t.item) === sourceKey(item))) && ['running', 'ready', 'download-ready'].includes(t.state))) { $('#queuePanel').hidden = true; $('#tasksPanel').hidden = false; return; }
   if (intent !== 'download' && (previous ? !previous.every(part => f.items.includes(part)) : !f.items.includes(item))) return;
   if (splitTasks.size >= 20) { toast('任务列表已满，请先确认或移除旧任务'); return; }
   const task = { id: uniqueId(), folder: f, item, description, previous, intent, state: 'running' };
-  splitTasks.set(task.id, task); $('#downloadsPanel').hidden = true; $('#queuePanel').hidden = true; $('#tasksPanel').hidden = false; renderTasks();
+  splitTasks.set(task.id, task); $('#queuePanel').hidden = true; $('#tasksPanel').hidden = false; renderTasks();
   try {
     if (intent === 'download') {
       await ensureCid(item);
@@ -594,6 +597,7 @@ async function runSplitTask(f, item, description, previous = null, intent = 'lib
   if (task.state === 'ready') notifySplitReady(task);
 }
 function restorePendingTasks() {
+  splitDraftsReady = true;
   try {
     const drafts = JSON.parse(localStorage.splitTaskDrafts || '[]');
     if (!Array.isArray(drafts)) return;
@@ -820,11 +824,41 @@ function saveSongInfo() {
     refreshPlaying();
   });
 }
+function playlistFileFolder(f) {
+  return { name: f.name, items: f.items, ...(f.sourceUrl ? { sourceUrl: f.sourceUrl, sourceSeen: f.sourceSeen || [] } : {}) };
+}
 function downloadLibrary() {
-  const content = JSON.stringify({ format: 'ccmusic-library', version: 1, folders: S.folders.map(f => ({ name: f.name, items: f.items })) }, null, 2);
+  const content = JSON.stringify({ format: 'ccmusic-library', version: 1, folders: S.folders.map(playlistFileFolder) }, null, 2);
   const url = URL.createObjectURL(new Blob([content], { type: 'application/json' }));
   const link = document.createElement('a'); link.href = url; link.download = `ccMusic-歌单-${new Date().toISOString().slice(0, 10)}.json`; link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+async function savePlaylistFile(f) {
+  if (!f) return;
+  try {
+    if (await B.savePlaylistFile(playlistFileFolder(f))) toast('歌单已保存到文件');
+  } catch (error) { toast('保存失败：' + error.message); }
+}
+
+async function saveImportReport(name, report) {
+  try { if (await B.saveImportReport(name, report)) toast('未导入清单已保存'); }
+  catch (error) { toast('清单保存失败：' + error.message); }
+}
+function formatImportReport(job) {
+  if (!job.list) return '';
+  const { tracks, unavailable = [] } = job.list;
+  const rows = [];
+  const record = (song, position, reason) => rows.push({ position: song.position || position, text:
+    [song.title || '未知曲目', song.artist].filter(Boolean).join(' - ') + '（' + reason + '）' });
+  for (const miss of job.unmatched) record(tracks[miss.index], miss.index + 1, miss.reason);
+  for (const duplicate of job.skippedDuplicates) record(duplicate.song, duplicate.index + 1, '音源重复，已跳过');
+  for (let i = job.index; i < tracks.length; i++) record(tracks[i], i + 1, '尚未处理');
+  for (const song of unavailable) record(song, song.position, '来源不可用');
+  const unknown = (job.list.total || 0) - tracks.length - unavailable.length;
+  if (!rows.length && unknown <= 0) return '';
+  const lines = rows.sort((a, b) => a.position - b.position).map(r => r.position + '. ' + r.text);
+  if (unknown > 0) lines.push('平台另有 ' + unknown + ' 项未提供曲目信息。');
+  return [job.name + ' · 未导入清单', '', ...lines].join('\n');
 }
 function addNext(items) {
   const existing = new Set(S.queue.map(itemKey));
@@ -864,7 +898,7 @@ function initWorkflows() {
     image.dataset.failedCover = image.getAttribute('src'); image.src = image.dataset.fallback;
   }, true);
   setPlayIcon(false); setModeIcon(); showSearchHistory();
-  $('#taskBtn').onclick = () => { $('#downloadsPanel').hidden = true; $('#queuePanel').hidden = true; $('#tasksPanel').hidden = !$('#tasksPanel').hidden; renderTasks(); };
+  $('#taskBtn').onclick = () => { $('#queuePanel').hidden = true; $('#tasksPanel').hidden = !$('#tasksPanel').hidden; renderTasks(); };
   $('#tasksClose').onclick = () => { $('#tasksPanel').hidden = true; };
   $('#tasksCancelAll').onclick = () => { for (const task of [...splitTasks.values()]) cancelSplitTask(task); };
   $('#tasksClear').onclick = () => { for (const task of [...splitTasks.values()]) if (['done', 'error', 'cancelled'].includes(task.state)) dismissSplitTask(task); };
@@ -957,8 +991,8 @@ function initWorkflows() {
     $('#libSort').value = ''; save(); renderList(); offerUndo('歌单已排序', () => { if (f.items.length === old.length && old.every(item => f.items.includes(item))) f.items = old; });
   };
   $('#libRename').onclick = () => renameFolder(folder());
-  $('#libExport').onclick = downloadLibrary;
-  $('#libImport').onclick = () => $('#importFile').click();
+  $('#libExport').onclick = () => savePlaylistFile(folder());
+  initPlaylistImport();
   $('#importFile').onchange = async () => {
     const file = $('#importFile').files[0]; $('#importFile').value = ''; if (!file) return;
     try {
@@ -994,4 +1028,84 @@ function initWorkflows() {
 }
 function libraryMatches(item) {
   return !libraryQuery || `${item.title} ${item.artist || ''} ${item.up || ''} ${item.vtitle || ''}`.toLowerCase().includes(libraryQuery);
+}
+
+// Desktop lyrics use the same song-relative clock for streams and local files.
+let lyricsTicket = 0, lyricsRows = [], lyricsRow = -1, lyricsItem = null, lyricsOffset = 0, lyricsKey = '', desktopLyricsEnabled = false;
+let lyricsMessage = '', lyricsPlainText = '', lyricsSource = '', lyricsLoadPromise = null, lyricsLoadedKey = '';
+function lyricsWanted() { return desktopLyricsEnabled || typeof nowLyricsWanted === 'function' && nowLyricsWanted(); }
+function refreshNowLyricsView() { if (typeof renderNowLyrics === 'function') renderNowLyrics(); }
+function publishDesktopLyrics(current, next = '') {
+  if (desktopLyricsEnabled) B.setDesktopLyricsLine({ current, next, offset: lyricsOffset }).catch(() => {});
+}
+function refreshLyricsLine() {
+  if (!lyricsWanted() || !lyricsRows.length) return;
+  const item = playback.current?.item;
+  if (!item || itemKey(item) !== itemKey(lyricsItem)) return;
+  const seconds = playbackTime() - (item.split ? item.startSec : 0) - lyricsOffset;
+  let index = -1;
+  for (let i = 0; i < lyricsRows.length && lyricsRows[i].time <= seconds; i++) index = i;
+  if (index === lyricsRow) return;
+  lyricsRow = index;
+  publishDesktopLyrics(lyricsRows[index]?.text || item.title, lyricsRows[index + 1]?.text || '');
+  if (typeof updateNowLyricIndex === 'function') updateNowLyricIndex();
+}
+function loadSongLyrics(force = false) {
+  const item = playback.current?.item;
+  if (!item) { lyricsMessage = '等待播放'; publishDesktopLyrics('等待播放'); refreshNowLyricsView(); return Promise.resolve(); }
+  if (!lyricsWanted()) return Promise.resolve();
+  const key = itemKey(item) + '|' + item.title + '|' + songArtist(item) + '|' + (item.neteaseId || '');
+  if (!force && key === lyricsLoadedKey && (lyricsLoadPromise || lyricsRows.length || lyricsMessage && lyricsMessage !== '正在查找歌词…')) {
+    if (!lyricsRows.length) publishDesktopLyrics(item.title, lyricsMessage);
+    refreshNowLyricsView(); refreshLyricsLine(); return lyricsLoadPromise || Promise.resolve();
+  }
+  lyricsLoadedKey = key;
+  const ticket = ++lyricsTicket;
+  lyricsItem = { ...item }; lyricsRows = []; lyricsRow = -1;
+  lyricsMessage = '正在查找歌词…'; lyricsPlainText = ''; lyricsSource = '';
+  lyricsKey = 'lyrics-offset:' + itemKey(item);
+  lyricsOffset = Number(localStorage.getItem(lyricsKey)) || 0;
+  publishDesktopLyrics(item.title, '正在查找歌词…');
+  refreshNowLyricsView();
+  lyricsLoadPromise = (async () => {
+    try {
+      const result = await B.songLyrics({ title: item.title, artist: songArtist(item), neteaseId: item.neteaseId });
+      if (ticket !== lyricsTicket || !lyricsWanted() || itemKey(playback.current?.item || {}) !== itemKey(item)) return;
+      if (!result?.lyric) { lyricsMessage = '暂未找到歌词'; publishDesktopLyrics(item.title, lyricsMessage); return; }
+      const node = document.createElement('textarea'); node.innerHTML = result.lyric;
+      lyricsRows = LyricsModel.parseLrc(node.value); lyricsSource = String(result.source || '');
+      if (!lyricsRows.length) {
+        lyricsPlainText = node.value.replace(/\[[^\]]*\]/g,'').trim(); lyricsMessage = '该歌词没有时间轴'; publishDesktopLyrics(item.title, lyricsMessage); return;
+      }
+      lyricsMessage = ''; refreshLyricsLine();
+    } catch (_) { if (ticket === lyricsTicket) { lyricsMessage = '歌词加载失败'; publishDesktopLyrics(item.title, lyricsMessage); } }
+    finally { if (ticket === lyricsTicket) { lyricsLoadPromise = null; refreshNowLyricsView(); } }
+  })();
+  return lyricsLoadPromise;
+}
+function adjustSongLyricsOffset(delta) {
+  if (!lyricsItem || !Number.isFinite(delta) || !playback.current || itemKey(lyricsItem) !== itemKey(playback.current.item)) return;
+  lyricsOffset = Math.max(-60, Math.min(60, lyricsOffset + delta));
+  try { localStorage.setItem(lyricsKey, lyricsOffset); } catch (_) {}
+  lyricsRow = -1; refreshLyricsLine(); refreshNowLyricsView();
+}
+function initSongLyrics() {
+  const syncDesktopState = state => {
+    const previous = desktopLyricsEnabled;
+    desktopLyricsEnabled = !!state?.enabled;
+    $('#desktopLyricsButton').setAttribute('aria-pressed', String(desktopLyricsEnabled));
+    if (desktopLyricsEnabled && !previous) { lyricsRow = -2; void loadSongLyrics(); }
+  };
+  B.onDesktopLyricsState(syncDesktopState);
+  B.desktopLyricsState().then(syncDesktopState).catch(() => {});
+  $('#desktopLyricsButton').onclick = async () => {
+    try { syncDesktopState(await B.toggleDesktopLyrics(!desktopLyricsEnabled)); }
+    catch (error) { toast('打开桌面歌词失败：' + error.message); }
+  };
+  B.onDesktopLyricsOffset(adjustSongLyricsOffset);
+  audio.addEventListener('timeupdate', refreshLyricsLine);
+}
+async function linkLocalAudio(item) {
+  try { if (await B.linkLocalAudio(item)) toast('已关联本地音频，下次播放优先使用'); }
+  catch (error) { toast('关联失败：' + error.message); }
 }

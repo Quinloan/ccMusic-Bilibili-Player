@@ -128,8 +128,19 @@
     let count = 0;
     return folders.map(folder => {
       if (!Array.isArray(folder.items) || !String(folder.name || '').trim()) throw new Error('歌单名称或曲目列表不完整');
-      return { name: String(folder.name).trim().slice(0, 80), items: folder.items.map(item => {
+      const sync = /https?:\/\/(?:www\.|space\.|m\.)?bilibili\.com\/|https?:\/\/b23\.tv\//i.test(folder.sourceUrl || '')
+        ? { sourceUrl: String(folder.sourceUrl).slice(0, 2000), sourceSeen: Array.isArray(folder.sourceSeen)
+          ? folder.sourceSeen.filter(key => typeof key === 'string' && /^BV[\da-z]{10}:\d+(?::.*)?$/i.test(key)).slice(0, 50000) : [] } : {};
+      return { name: String(folder.name).trim().slice(0, 80), ...sync, items: folder.items.map(item => {
         if (++count > 50000) throw new Error('最多一次导入 50000 首');
+        if (/^[a-f0-9]{32}$/i.test(item?.localId || '')) {
+          const seconds = duration(item.duration || 0);
+          if (!Number.isFinite(seconds) || seconds < 0) throw new Error('本地歌曲时长无效');
+          return { localId: item.localId, title: String(item.title || '本地歌曲').slice(0, 500),
+            artist: String(item.artist || '').slice(0, 200), album: String(item.album || '').slice(0, 200),
+            trackNumber: Number(item.trackNumber) || 0, duration: seconds, page: 1, partsCount: 1, identifySource: item.identifySource === 'manual' ? 'manual' : 'local',
+            cover: /^(?:https?:|file:)\/\//i.test(item.cover || '') ? String(item.cover).slice(0, 2000) : '' };
+        }
         if (!/^BV[\da-z]{10}$/i.test(item?.bvid || '')) throw new Error('存在无效 BV 号，导入已取消');
         const page = Number(item.page || 1), seconds = duration(item.duration || 0);
         if (!Number.isInteger(page) || page < 1 || page > 10000 || !Number.isFinite(seconds) || seconds < 0) throw new Error('曲目时长或分 P 无效');
@@ -214,7 +225,52 @@
     if (!key(left.title) || !key(left.artist) || key(left.title) !== key(right.title) || key(left.artist) !== key(right.artist)) return false;
     return !left.neteaseId || !right.neteaseId || String(left.neteaseId) === String(right.neteaseId);
   }
-  const api = { duration, isVideoPart, songCoverUrl, songTitleIntent, validateTracks, mergeTrack, cutTrack, importedFolders, createMetadataQueue, canMergeFragments, fragmentRanges };
+  function parseSongList(text) {
+    const lines = text.trim().split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    if (!lines.length) throw new Error('请先粘贴歌单链接或曲目清单');
+    return lines.map((line, i) => {
+      const fields = line.split(/\t+|\s+[-–—]\s+/);
+      if (fields.length < 2 || !fields[0].trim() || !fields[1].trim() || line.length > 400)
+        throw new Error(`第 ${i + 1} 行请使用「歌名 - 歌手」格式`);
+      return { title: fields.slice(0, -1).join(' - ').trim(), artist: fields.at(-1).trim() };
+    });
+  }
+  function playlistCandidates(song, videos) {
+    const normalize = s => String(s || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+    const title = normalize(song.title);
+    const artists = song.artist.split(/\s*[/、]\s*/).flatMap(label => {
+      const alias = label.match(/^(.+?)\s*[（(]([^()（）]+)[)）]$/);
+      return alias ? [alias[1], alias[2]] : [label];
+    }).map(normalize).filter(Boolean);
+    const versions = /翻唱|伴奏|串烧|合集|教程|解说|混剪|变速|加速|慢速|现场|\b(?:cover|live|remix|instrumental|reaction|sped up|slowed|AI)\b/gi;
+    const sourceVersions = new Set((song.title.match(versions) || []).map(normalize));
+    const matches = [];
+    for (const video of videos) {
+      const caption = normalize(video.title), seconds = duration(video.duration);
+      if (!title || !caption.includes(title) || !artists.length || !artists.some(a => caption.includes(a) || normalize(video.author) === a)) continue;
+      if ((video.title.match(versions) || []).some(version => !sourceVersions.has(normalize(version)))) continue;
+      const difference = Math.abs(seconds - song.seconds);
+      if (!(seconds > 0) || (song.seconds > 0 ? difference > Math.max(22, song.seconds * 0.13) : seconds > 600)) continue;
+      let score = artists.filter(a => caption.includes(a)).length;
+      if (caption === title || artists.some(a => caption === a + title || caption === title + a)) score += 4;
+      if (song.seconds > 0) score += 3 / (1 + difference / 5);
+      matches.push({ video, score });
+    }
+    return matches.sort((a, b) => b.score - a.score).map(match => match.video);
+  }
+  function duplicateGroups(items) {
+    const normalize = text => String(text || '').normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+    const groups = new Map();
+    items.forEach((item, index) => {
+      const artist = normalize(item.artist), title = normalize(item.title);
+      if (!artist || !title || /^曲目\d+/.test(title)) return;
+      const key = title + '|' + artist;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push({ item, index });
+    });
+    return [...groups.values()].filter(group => group.length > 1);
+  }
+  const api = { duration, isVideoPart, songCoverUrl, songTitleIntent, validateTracks, mergeTrack, cutTrack, importedFolders, createMetadataQueue, canMergeFragments, fragmentRanges, parseSongList, playlistCandidates, duplicateGroups };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.LibraryModel = api;
 })(globalThis);

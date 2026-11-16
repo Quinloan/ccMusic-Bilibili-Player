@@ -4,11 +4,11 @@
 
 ## 安装
 
-**[国内下载解压即用 ZIP：ccMusic-1.8.0-Windows-x64.zip](https://cnb.cool/Quinloan/ccMusic/-/releases/download/v1.8.0/ccMusic-1.8.0-Windows-x64.zip)** · [GitHub 备用](https://github.com/Quinloan/ccMusic-Bilibili-Player/releases/download/v1.8.0/ccMusic-1.8.0-Windows-x64.zip)。解压整个文件夹后双击 `ccMusic.exe`。ZIP 的应用内更新会转为安装版；如需继续免安装使用，请手动下载新版 ZIP。
+**[国内下载解压即用 ZIP：ccMusic-1.9.0-Windows-x64.zip](https://cnb.cool/Quinloan/ccMusic/-/releases/download/v1.9.0/ccMusic-1.9.0-Windows-x64.zip)** · [GitHub 备用](https://github.com/Quinloan/ccMusic-Bilibili-Player/releases/download/v1.9.0/ccMusic-1.9.0-Windows-x64.zip)。解压整个文件夹后双击 `ccMusic.exe`。ZIP 的应用内更新会转为安装版；如需继续免安装使用，请手动下载新版 ZIP。
 
-需要安装的用户可下载 [Windows 安装包（国内）](https://cnb.cool/Quinloan/ccMusic/-/releases/download/v1.8.0/ccMusic-Setup-1.8.0.exe) · [GitHub 备用](https://github.com/Quinloan/ccMusic-Bilibili-Player/releases/download/v1.8.0/ccMusic-Setup-1.8.0.exe)，适用于 Windows 10/11 x64。覆盖安装保留本机歌单和登录状态。`latest.yml` 供自动更新使用，无需手动下载。默认不捆绑 Whisper，无需另外注册识曲服务账号。
+需要安装的用户可下载 [Windows 安装包（国内）](https://cnb.cool/Quinloan/ccMusic/-/releases/download/v1.9.0/ccMusic-Setup-1.9.0.exe) · [GitHub 备用](https://github.com/Quinloan/ccMusic-Bilibili-Player/releases/download/v1.9.0/ccMusic-Setup-1.9.0.exe)，适用于 Windows 10/11 x64。覆盖安装保留本机歌单和登录状态。`latest.yml` 供自动更新使用，无需手动下载。默认不捆绑 Whisper，无需另外注册识曲服务账号。
 
-v1.8.0 新增紧凑/方形小窗、封面主色背景和直接下载时的智能分歌，完善下载窗口布局，并修复部分欧美歌曲的歌手与专辑封面补全。2026-11-07 更新下载包，补入默认国内、可切换 GitHub 的双源更新；此前已安装的 v1.8.0 请重新下载覆盖安装一次，同版本不会触发升级提醒。完整说明见 [v1.8.0 发布说明](RELEASE_NOTES_v1.8.0.md)。
+v1.9.0 新增独立播放界面、桌面悬浮歌词、后台导入外部歌单、本地音乐与多套主题，升级音量平衡并调整侧栏和底部播放器布局，完善登录与播放维护。GitHub、CNB 国内源同步发布，默认国内更新。完整说明见 [v1.9.0 发布说明](RELEASE_NOTES_v1.9.0.md)。
 
 ## 功能
 
@@ -38,13 +38,23 @@ v1.8.0 新增紧凑/方形小窗、封面主色背景和直接下载时的智能
 
 13. **小窗播放**：紧凑与方形两种尺寸，支持置顶、封面主色背景、曲目切换、进度和音量控制；切换小窗继续原有播放。可用标题栏按钮、Ctrl+Shift+M 或托盘菜单切换。
 
+14. **独立播放界面**：点击左下角封面，展开大封面、同步歌词、虚化背景和可选真实音频频谱；可调整显示项、颜色、歌词字号及时间偏移，返回时播放不中断。
+
+15. **桌面悬浮歌词**：切换到其他软件也可查看同步歌词，支持字号、颜色、位置、单行/双行和时间偏移调整；歌词查询使用歌曲资料，优先网易云、备选 QQ 音乐。
+
+16. **歌单导入与备份**：侧栏加号支持导入网易云、QQ 音乐公开歌单、B 站收藏夹或音频歌单及文本清单；后台逐首匹配，支持排队、恢复、导出未导入 TXT，以及备份和恢复 ccMusic 歌单。
+
+17. **音乐库整理**：支持「我喜欢」、歌单和队列拖动排序、重复项整理、B 站收藏夹新增同步、本地文件夹扫描与音频标签读取。
+
+18. **外观与续播**：跟随系统、浅色、深色模式与五套强调色；支持自定义全局快捷键，仅为至少 30 分钟的长音频记忆进度，普通歌曲重新点开从头播放。
+
 最高可用音质取决于 B 站登录状态、账号权益和源音轨；MP3是有损格式，320 kbps不会提升低音质源的实际质量。
 
 识曲和切分可能需要手动修正，尤其是翻唱、混音和连续串烧；同名歌曲信息与演唱者以实际内容为准。
 
 ## 界面预览
 
-首页、分歌和歌单示例沿用之前提供的截图；小窗为本版布局示例，展示示例曲目。
+以下首页、分歌、歌单与小窗截图沿用之前版本，仅展示基本功能；本版布局与配色已有调整。
 
 ![首页音乐推荐](docs/screenshots/01-home.png)
 

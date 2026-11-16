@@ -28,7 +28,7 @@ async function run() {
       const base = { bvid: 'BV15C41187cx', cid: 42, page: 1, split: true, splitBatch: 'fragments', vtitle: 'R&B歌单', originalDuration: 500, cover: '/assets/icon.png' };
       window.parts = [{ ...base, startSec: 0, endSec: 89, duration: 89, title: '曲目 1' }, { ...base, startSec: 89, endSec: 217, duration: 128, title: '曲目 2' },
         { ...base, startSec: 217, endSec: 500, duration: 283, title: '曲目 3' }];
-      folder().items = parts; loadQueue(parts, 1); playback.current = { item: S.queue[1], idx: 1 }; audio.currentTime = 140;
+      folder().items = parts; loadQueue(parts, 1); playback.current = { item: S.queue[1], idx: 1, track: {} }; audio.currentTime = 140;
       window.task = { id: 'progressive-test', folder: folder(), item: wholeSourceItem(parts[0]), batch: 'fragments', state: 'running',
         result: { duration: 500, tracks: parts.map(item => ({ start: item.startSec, end: item.endSec })) } };
       splitTasks.set(task.id, task); renderList(); renderQueue();
@@ -99,14 +99,14 @@ async function run() {
       mergeAdjacentIdentified('chain');
     });
     assert.equal(await page.evaluate(() => folder().items.length), 2, 'unrelated completed fragments may merge while a later fragment is loading');
-    await page.evaluate(() => { playback.current = { item: S.queue[S.qcur], idx: S.qcur }; mergeAdjacentIdentified('chain'); });
+    await page.evaluate(() => { playback.current = { item: S.queue[S.qcur], idx: S.qcur, track: {} }; mergeAdjacentIdentified('chain'); });
     assert.equal(await page.evaluate(() => folder().items.length), 1); assert.equal(await page.evaluate(() => curSplitEnd), 259);
     await page.locator('#undoButton').click();
     assert.equal(await page.evaluate(() => folder().items.length), 2, 'latest undo restores only its own merge');
     await page.evaluate(() => {
       const base = { ...folder().items[0], boundaryLocked: false };
       folder().items = [[0, 89], [89, 189], [189, 259]].map(([startSec, endSec]) => ({ ...base, startSec, endSec, duration: endSec - startSec }));
-      loadQueue(folder().items, 2); playback.current = { item: S.queue[2], idx: 2 }; mergeAdjacentIdentified('chain');
+      loadQueue(folder().items, 2); playback.current = { item: S.queue[2], idx: 2, track: {} }; mergeAdjacentIdentified('chain');
     });
     assert.equal(await page.evaluate(() => folder().items.length), 1);
     await page.locator('#undoButton').click();

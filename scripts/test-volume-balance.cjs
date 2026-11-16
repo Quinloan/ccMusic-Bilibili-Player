@@ -6,11 +6,11 @@ async function run() {
   for (let n = 0; n < 100; n++) controller.push(0);
   assert.equal(controller.reference, null); assert.equal(controller.db, V.INITIAL_DB);
   for (let n = 0; n < 30; n++) controller.push(0.1);
-  assert(Math.abs(controller.db - 6) < 1e-8);
+  assert(Math.abs(controller.db - 8.691) < 1e-8);
   for (let n = 0; n < 200; n++) controller.push(0.01);
-  assert(Math.abs(controller.db - 6) < 1e-8, 'quiet bridges/fades do not get chased upwards');
-  assert.equal(V.createController(-20).db, 6, 'existing measured references immediately use the new target');
-  assert.equal(V.createController(-30).db, 16, 'quiet recordings have enough lift to reach the same target');
+  assert(Math.abs(controller.db - 8.691) < 1e-8, 'quiet bridges/fades do not get chased upwards');
+  assert.equal(V.createController(-20).db, 8, 'LUFS references immediately use the new target');
+  assert.equal(V.createController(-30).db, 18, 'quiet recordings have enough lift to reach the same target');
   assert.equal(V.createController(-45).db, V.MAX_DB); assert.equal(V.createController(6).db, V.MIN_DB);
   assert.equal(V.createController(NaN).reference, null);
   assert.equal(V.rms([new Float32Array([0.5,-0.5]), new Float32Array([-0.5,0.5])]), 0.5);
@@ -19,11 +19,7 @@ async function run() {
   try {
     const page = await browser.newPage();
     await page.route('**/*', route => route.abort());
-    const previousFile = path.join(__dirname, '../release-work/v1.6.2/renderer/volume-balance.js');
-    if (fs.existsSync(previousFile)) {
-      await page.addScriptTag({ content: fs.readFileSync(previousFile, 'utf8') });
-      await page.evaluate(() => { window.PreviousVolumeBalance = window.VolumeBalance; });
-    }
+    await page.addScriptTag({ content: fs.readFileSync(path.join(__dirname, '../renderer/loudness-meter.js'), 'utf8') });
     await page.addScriptTag({ content: fs.readFileSync(path.join(__dirname, '../renderer/volume-balance.js'), 'utf8') });
     const result = await page.evaluate(async () => {
       async function render({ engine = VolumeBalance, level = 0.6, duration = 9, intro = 0, antiPhase = false, volume = 1, enabled = true, changeVolume = false, bridge = false, impulse = false, cached } = {}) {
@@ -51,7 +47,9 @@ async function run() {
           return Math.sqrt(sum / Math.round((to - from) * rate));
         }
         let peak = 0; for (const sample of output.getChannelData(0)) peak = Math.max(peak, Math.abs(sample));
-        return { outputDb: 20 * Math.log10(rms(duration - 2, duration)), reference: control.reference, gainDb: control.db, peak,
+        const measured = VolumeBalance.createController(), meter = LoudnessMeter.createMeter(rate, level => measured.push(level));
+        meter.process([output.getChannelData(0).subarray((duration - 2) * rate), output.getChannelData(1).subarray((duration - 2) * rate)]);
+        return { outputLufs: measured.reference, outputDb: 20 * Math.log10(rms(duration - 2, duration)), reference: control.reference, gainDb: control.db, peak,
           firstHalfDb: 20 * Math.log10(rms(3,4)), earlyDb: 20 * Math.log10(rms(0.1,0.3)), reading3: readings.find(r => r.time >= 3), samples: control.samples };
       }
       const loud = await render(), quiet = await render({ level: 0.06 });
@@ -75,9 +73,8 @@ async function run() {
     assert(Math.abs(result.bypass.outputDb - result.bypassQuarter.outputDb - 12.0412) < 0.05);
     assert(Math.abs(result.bridge.gainDb - result.loud.gainDb) < 0.5, 'quiet passages retain the song gain');
     assert(Math.abs(result.bridge.outputDb - result.bridge.firstHalfDb + 12.0412) < 1);
-    assert(result.loud.outputDb > -14 && result.loud.outputDb < -11, 'maximum balanced volume has useful loudness, rather than the old roughly -18.6 dB RMS output');
+    assert(Math.abs(result.loud.outputLufs - V.TARGET_DB) < .5, 'output reaches the musical LUFS target');
     assert(Math.abs(result.cached.earlyDb - result.cached.outputDb) < 0.2, 'cached references apply the new target from the start, allowing compressor startup settling');
-    if (result.previous) for (const kind of ['loud', 'quiet']) assert(Math.abs(result[kind].outputDb - result.previous[kind].outputDb - 6) < 0.1, 'same source and fader gain about 6 dB over the published version');
     assert(result.loud.peak < 1 && result.quiet.peak < 1, 'higher target keeps normal signal peaks below full scale');
     assert(result.safety.peak < 1, 'peak protection keeps an 18 dB boosted transient below full scale');
     console.log('PASS: real silent Web Audio graph; 20 dB source difference, late intro, stereo phase, user fader, bypass, musical dynamics, cache startup and peak protection');

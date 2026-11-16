@@ -3,12 +3,25 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('api', {
   // 收藏夹数据
   getLibrary: () => ipcRenderer.invoke('store:get'),
+  readSharedPlaylist: (input, id) => ipcRenderer.invoke('playlist:read-share', input, id),
+  getImportDraft: () => ipcRenderer.invoke('playlist:draft-get'),
+  saveImportDraft: draft => ipcRenderer.invoke('playlist:draft-save', draft),
+  cancelPlaylistRead: id => ipcRenderer.invoke('playlist:cancel-read', id),
+  searchPlaylistTrack: keyword => ipcRenderer.invoke('playlist:match-search', keyword),
+  savePlaylistFile: folder => ipcRenderer.invoke('playlist:save-file', folder),
+  saveImportReport: (name, content) => ipcRenderer.invoke('playlist:save-report', name, content),
   setLibrary: (lib) => ipcRenderer.invoke('store:set', lib),
 
   // B 站
   search: (keyword, page) => ipcRenderer.invoke('bili:search', keyword, page),
   video: (id) => ipcRenderer.invoke('bili:video', id),
   playurl: (bvid, cid, refresh = false) => ipcRenderer.invoke('bili:playurl', bvid, cid, refresh),
+  localAudio: item => ipcRenderer.invoke('audio:local', item),
+  localLibraryList: () => ipcRenderer.invoke('local-library:list'),
+  localLibraryScan: () => ipcRenderer.invoke('local-library:scan'),
+  localLibraryReveal: item => ipcRenderer.invoke('local-library:reveal', item),
+  onLocalLibraryProgress: callback => ipcRenderer.on('local-library:progress', (_event, progress) => callback(progress)),
+  linkLocalAudio: item => ipcRenderer.invoke('audio:link-local', item),
   resolve: (url) => ipcRenderer.invoke('bili:resolve', url),
 
   downloadStart: (items, allowLimited = false) => ipcRenderer.invoke('download:start', items, allowLimited),
@@ -27,6 +40,12 @@ contextBridge.exposeInMainWorld('api', {
   splitHistory: items => ipcRenderer.invoke('split:history', items),
   songCover: match => ipcRenderer.invoke('artwork:resolve', match),
   resolveSongTitle: input => ipcRenderer.invoke('song:resolve-title', input),
+  songLyrics: input => ipcRenderer.invoke('song:lyrics', input),
+  desktopLyricsState: () => ipcRenderer.invoke('lyrics:desktop-state'),
+  toggleDesktopLyrics: on => ipcRenderer.invoke('lyrics:desktop-toggle', on),
+  setDesktopLyricsLine: line => ipcRenderer.invoke('lyrics:desktop-line', line),
+  onDesktopLyricsState: callback => ipcRenderer.on('lyrics:desktop-state', (_event, state) => callback(state)),
+  onDesktopLyricsOffset: callback => ipcRenderer.on('lyrics:desktop-offset', (_event, delta) => callback(delta)),
   onSplitProgress: (cb) => { ipcRenderer.on('split:progress', (_e, p) => cb(p)); },
 
   // 系统
@@ -49,6 +68,8 @@ contextBridge.exposeInMainWorld('api', {
   setTrayTip: (text) => ipcRenderer.invoke('tray:title', text),
   appQuit: () => ipcRenderer.invoke('app:quit'),
   setMediaKeys: (on) => ipcRenderer.invoke('settings:mediaKeys', !!on),
+  getShortcuts: () => ipcRenderer.invoke('shortcuts:get'),
+  setShortcuts: bindings => ipcRenderer.invoke('shortcuts:set', bindings),
   setCloseToTray: (on) => ipcRenderer.invoke('settings:closeToTray', !!on),
   setAutoLaunch: (on) => ipcRenderer.invoke('settings:autoLaunch', !!on),
   getAutoLaunch: () => ipcRenderer.invoke('settings:autoLaunchState'),

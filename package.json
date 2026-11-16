@@ -1,6 +1,6 @@
 {
   "name": "ccmusic",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "description": "ccMusic — B 站纯音频连播桌面端：只取音频轨流式播放，自定义收藏夹自动连播",
   "main": "main.js",
   "scripts": {
@@ -17,6 +17,7 @@
   "dependencies": {
     "@material/material-color-utilities": "0.3.0",
     "electron-updater": "^6.8.9",
+    "music-metadata": "12.5.0",
     "opencc-js": "1.4.2",
     "qrcode": "^1.5.4",
     "shazamio-api": "1.0.0",
@@ -27,7 +28,7 @@
     "appId": "com.ccmusic.app",
     "productName": "ccMusic",
     "directories": {
-      "output": "release-v1.8.0"
+      "output": "release-v1.9.0"
     },
     "artifactName": "${productName}-Setup-${version}.${ext}",
     "publish": {
@@ -38,6 +39,7 @@
     },
     "files": [
       "main.js",
+      "bili-session.cjs",
       "preload.cjs",
       "renderer/**",
       "package.json",
@@ -49,6 +51,13 @@
       "cover-art.cjs",
       "netease-lyrics.cjs",
       "video-search.cjs",
+      "external-playlist.cjs",
+      "song-lyrics.cjs",
+      "local-audio.cjs",
+      "music-library.cjs",
+      "custom-shortcuts.cjs",
+      "desktop-lyrics.cjs",
+      "desktop-lyrics-preload.cjs",
       "cancellation.cjs",
       "audio-downloads.cjs",
       "mp3-worker.cjs",

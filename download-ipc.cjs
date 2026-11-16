@@ -1,9 +1,12 @@
 const fs = require('node:fs');
 const { createDownloader, validateItems } = require('./audio-downloads.cjs');
-function registerDownloads({ app, ipcMain, dialog, BrowserWindow, shell, executable, getLoginState, getPlayurl, resolveItem, request, headers }) {
+function registerDownloads({ app, ipcMain, dialog, BrowserWindow, shell, executable, getLoginState, getPlayurl, resolveItem, request, headers, onDownloaded }) {
   const owners = new WeakSet();
   const manager = createDownloader({ executable, getPlayurl, resolveItem, request, headers,
-    onUpdate: (owner, task) => { if (!owner.isDestroyed()) owner.send('download:progress', task); } });
+    onUpdate: (owner, task) => {
+      if (task.state === 'done') try { onDownloaded?.(task.item, task.file); } catch (_) {}
+      if (!owner.isDestroyed()) owner.send('download:progress', task);
+    } });
   let quitting = false, quitReady = false;
   app?.on('before-quit', event => {
     if (quitReady || !manager.hasPending()) return;
